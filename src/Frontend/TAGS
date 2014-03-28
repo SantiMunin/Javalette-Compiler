@@ -1,0 +1,45 @@
+
+./TypeChecker.hs,1507
+module Frontend.TypeChecker Frontend.TypeChecker2,3
+type Env Env16,17
+type Functions Functions20,21
+type Context Context23,24
+newtype TypeCheck TypeCheck27,28
+newtype TypeCheck a = TypeCheck TypeCheck27,28
+newtype TypeCheck a = TypeCheck { runType runType27,28
+lookupVar lookupVar31,32
+lookupVar lookupVar32,33
+lookupFun lookupFun42,43
+lookupFun lookupFun43,44
+createVarIfNotExists createVarIfNotExists50,51
+createVarIfNotExists createVarIfNotExists51,52
+deleteVar deleteVar60,61
+deleteVar deleteVar61,62
+createFunIfNotExists createFunIfNotExists67,68
+createFunIfNotExists createFunIfNotExists68,69
+newBlock newBlock75,76
+newBlock newBlock76,77
+removeBlock removeBlock79,80
+removeBlock removeBlock80,81
+emptyEnv emptyEnv83,84
+emptyEnv emptyEnv84,85
+typecheck typecheck87,88
+typecheck typecheck88,89
+initializeEnv initializeEnv97,98
+initializeEnv initializeEnv98,99
+typeCheckDef typeCheckDef114,115
+typeCheckDef typeCheckDef115,116
+typeCheckStmt typeCheckStmt126,127
+typeCheckStmt typeCheckStmt127,128
+checkTypeExpr checkTypeExpr213,214
+checkTypeExpr checkTypeExpr214,215
+inferTypeExpr inferTypeExpr222,223
+inferTypeExpr inferTypeExpr223,224
+checkValidArrayType checkValidArrayType282,283
+checkValidArrayType checkValidArrayType283,284
+checkTypeNum checkTypeNum289,290
+checkTypeNum checkTypeNum290,291
+checkArgs checkArgs296,297
+checkArgs checkArgs297,298
+inferTypeCMP inferTypeCMP308,309
+inferTypeCMP inferTypeCMP309,310

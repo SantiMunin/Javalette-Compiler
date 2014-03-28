@@ -9,3 +9,5 @@ cabal-dev
 graderTestSuite/
 *.bc
 *.ll
+
+src/Javalette/
