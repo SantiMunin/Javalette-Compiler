@@ -5,7 +5,12 @@ cabal-dev
 *.chi
 *.chs.h
 .virthualenv
+
 *.swp
+*~
+[#]*[#]
+.\#*
+
 graderTestSuite/
 *.bc
 *.ll
