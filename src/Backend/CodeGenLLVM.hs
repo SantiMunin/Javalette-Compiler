@@ -1,19 +1,22 @@
 {-# LANGUAGE ExistentialQuantification  #-}
 {-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+-- | LLVM code generator.
 module Backend.CodeGenLLVM (genCode) where
 
-import           Javalette.Abs
-import           Javalette.ErrM
-import           Backend.LLVM
+import Javalette.Abs
+import Javalette.ErrM
+import Backend.LLVM
 
-import Control.Monad                    (when)
+import Control.Monad                    (when, void)
 import qualified Control.Monad.Identity as CMI
 import qualified Control.Monad.State    as CMS
 import qualified Data.Map               as M
 
 import           Data.List              (intersperse)
-  
+
+-- | State of code generator (addresses, labels, variables, 
+-- functions, global definitions, code generated...)
 data Env = E { nextAddr  :: Int
              , nextLabel :: Int
              , localvar  :: [M.Map Id (Register,Ty)]
@@ -22,6 +25,7 @@ data Env = E { nextAddr  :: Int
              , globalvar :: Int
              , globalDef :: [String]}
 
+-- | Creates an initial environment.
 initialEnv :: Program -> Env
 initialEnv (Prog defs) = E { nextAddr  = 0
                            , nextLabel = 0
@@ -29,15 +33,17 @@ initialEnv (Prog defs) = E { nextAddr  = 0
                            , functions = collectFunDefs defs
                            , code      = []
                            , globalDef = []
-                           , globalvar = 0 }
-                                         
+                           , globalvar = 0 }      
 
+-- | Searches all function definitions, so they can be used regardless 
+-- of the definition ordering (this allows mutual recursion).
 collectFunDefs :: [TopDef] -> M.Map String (Ty, [Ty])
 collectFunDefs =
   foldl (\m (FnDef ret_t (Ident id) args _) ->
     M.insert id (toPrimTy ret_t,
                  map (\(Argument t _) -> toPrimTy t) args) m) M.empty
 
+-- | Returns the type of a function.
 lookUpFunTypes :: String -> GenCode (Ty, [Ty])
 lookUpFunTypes "printInt"    = return (V, [I32])
 lookUpFunTypes "printDouble" = return (V,[D])
@@ -50,13 +56,16 @@ lookUpFunTypes id = do
     Nothing -> fail $ "Function " ++ show id ++ " does not exist."
     Just  v -> return v
 
-
+-- | Definition of the code generator monad. 
 newtype GenCode a = GenCode { runGC :: CMS.StateT Env CMI.Identity a }
-    deriving (Monad,CMS.MonadState Env)
+    deriving (Monad, Functor, CMS.MonadState Env)
 
+-- | Unwraps the monad.
 runGenCode :: Program -> GenCode a -> (a,Env)
 runGenCode p = CMI.runIdentity . (flip CMS.runStateT) (initialEnv p) . runGC
 
+-- | Headers of built-in functions and types. 
+-- They will be written before the rest of the program.
 headers :: String
 headers = unlines [ "declare void @printInt(i32)"
                   , "declare void @printDouble(double)"
@@ -70,27 +79,27 @@ headers = unlines [ "declare void @printInt(i32)"
                   , "%arrayi1 = type {i32, i1*}"
                   , "" ]
 
+-- | Main function, generates the program's LLVM code. 
 genCode :: String -> Program -> Err String
 genCode str p@(Prog defs) = do
   let (funs,s) =  runGenCode p (mapM genCodeFunction defs)
-  return $ headers ++ unlines (globalDef s) ++ (concatMap show funs)
+  return $ headers ++ unlines (globalDef s) ++ concatMap show funs
 
-type Address = Int
-
+-- | Emits an intruction.
 emit :: Instr -> GenCode ()
 emit instruction = 
-  CMS.modify (\env -> env { code = instruction : (code env) })
+  CMS.modify (\env -> env { code = instruction : code env })
 
+-- | Adds the definition of a string (which has to be global 
+-- due to the LLVM's rules).
 addGlobalStr :: Register -> String -> GenCode ()
-addGlobalStr (Register r) s = do
-  addGlobalDef $ concat ["@",r, " = internal constant [", show $ length s + 1, "x i8] c\"", s,"\\00\""]
+addGlobalStr (Register r) s = addGlobalDef $ concat ["@",r, " = internal constant [", show $ length s + 1, "x i8] c\"", s,"\\00\""]
 
-
-
+-- | Adds a global definition (useful for arrays).
 addGlobalDef :: String -> GenCode ()
-addGlobalDef s = do
-  CMS.modify (\env -> env { globalDef = globalDef env ++ [s]})
+addGlobalDef s = CMS.modify (\env -> env { globalDef = globalDef env ++ [s]})
                 
+-- | Creates a new local register name.
 freshLocal:: GenCode Register
 freshLocal= do
   env <- CMS.get
@@ -98,15 +107,16 @@ freshLocal= do
   CMS.modify (\env -> env { nextAddr = freshR + 1})
   return (Register $ show freshR)
 
-
+-- | Creates a new local variable name. 
 freshVar :: Ident -> Type -> GenCode Register
 freshVar (Ident name) t = do
   id <- freshLocal
   env <- CMS.get
   let (x:xs) = localvar env
-  CMS.modify (\env -> env { localvar = M.insert name (id,toPrimTy t) x : xs})
+  CMS.modify (\env -> env { localvar = M.insert name (id, toPrimTy t) x : xs})
   return id
 
+-- | Creates a new global variable name.
 freshGlobal :: GenCode Register
 freshGlobal = do
   env <- CMS.get
@@ -114,7 +124,8 @@ freshGlobal = do
   CMS.modify (\env -> env { globalvar = freshR + 1})
   return (Register (show freshR))
 
-lookUpVar :: Ident -> GenCode (Register,Ty)
+-- | Looks the register related to a variable.
+lookUpVar :: Ident -> GenCode (Register, Ty)
 lookUpVar (Ident name) = do
   localvar <- CMS.gets localvar
   search name localvar
@@ -125,38 +136,42 @@ lookUpVar (Ident name) = do
           Nothing -> search name xs
           Just  x -> return x
 
-
+-- | Converts between a LLVM type and a code generator type.
 toPrimTy :: Type -> Ty
 toPrimTy t = case t of
-               Int  -> I32
-               Doub -> D
-               Void -> V
-               Bool -> I1
-               Array t' -> ArrayT (toPrimTy t')
-                          
+               Int        -> I32
+               Doub       -> D
+               Void       -> V
+               Bool       -> I1
+               Array t'   -> ArrayT (toPrimTy t')
+
+-- | Creates a new label.
 freshLabel :: GenCode Label
 freshLabel = do
   env <- CMS.get
   let next = nextLabel env
   CMS.modify (\env -> env { nextLabel = next + 1})
   return (IntLab next)
-         
+
+-- | Adds a function to the environment.
 newFunction :: [Arg] -> GenCode ()
 newFunction args = do
   env <- CMS.get
   CMS.modify (\env -> env { localvar = [M.empty], code = [], nextLabel = 0 })
 
+-- | New block implies new scope of variables.
 newBlock :: GenCode ()
 newBlock = do
   vars <- CMS.gets localvar
   CMS.modify (\env -> env { localvar = M.empty : vars })
 
-
+-- | Exiting a block implies removing the top-most scope of variables.
 removeBlock :: GenCode ()
 removeBlock = do
   (x:xs) <- CMS.gets localvar
   CMS.modify (\env -> env { localvar = xs })
 
+-- | Generates the code of a function.
 genCodeFunction :: TopDef -> GenCode Function
 genCodeFunction (FnDef t (Ident id) args block) = do
   newFunction args
@@ -168,14 +183,16 @@ genCodeFunction (FnDef t (Ident id) args block) = do
   when (t == Void) (emit (Term IVRet))
   instr <- CMS.gets code       
   return $ mkFun id (toPrimTy t) (toPrimArgs args) (reverse instr)
-         
-toPrimArgs = map (\(Argument t (Ident id)) -> (id,toPrimTy t))
+    where
+      -- | Translates a list of args to a more suitable type.
+      toPrimArgs :: [Arg] -> [(Id, Ty)]
+      toPrimArgs = map (\(Argument t (Ident id)) -> (id,toPrimTy t))
 
+-- | Generates a block of statements.
 genCodeBlock :: Block -> GenCode ()
-genCodeBlock (SBlock stmts) = do
-  mapM_ genCodeStmt stmts
+genCodeBlock (SBlock stmts) = mapM_ genCodeStmt stmts
 
-
+-- | Generates the code of an item (an item is a variable declaration w/without initialization).
 genCodeItem :: Type -> Item -> GenCode ()
 genCodeItem rawtype (NoInit id)    = do
   addr <- freshVar id rawtype
@@ -188,9 +205,8 @@ genCodeItem rawtype (NoInit id)    = do
     where
       type' = toPrimTy rawtype
       t = case type' of
-            ArrayT _ -> (Ptr type')
+            ArrayT _ -> Ptr type'
             _        -> type'
-
 genCodeItem rawtype (Init id expr) = do
   val         <- genCodeExpr expr
   addr        <- freshVar id rawtype
@@ -199,8 +215,10 @@ genCodeItem rawtype (Init id expr) = do
     where
       type' = toPrimTy rawtype
       t = case type' of
-            ArrayT _ -> (Ptr type')
+            ArrayT _ -> Ptr type'
             _        -> type'
+
+-- | Generates the code of an statement.
 genCodeStmt :: Stmt -> GenCode ()
 genCodeStmt stmt = case stmt of
   Empty        -> return ()
@@ -209,15 +227,13 @@ genCodeStmt stmt = case stmt of
     newBlock
     genCodeBlock block
     removeBlock
-
-  Decl type' items  -> do
-    mapM_ (genCodeItem type') items
+  Decl type' items  -> mapM_ (genCodeItem type') items
 
   Ass (VarI id) expr  -> do
     (addr,ty) <- lookUpVar id
     val       <- genCodeExpr expr
     emit $ NonTerm (IStore addr val ty) Nothing 
-
+  
   Ass (VarArr id index) expr -> do
     value    <- genCodeExpr expr
     (addr,ty@(ArrayT innerType)) <- lookUpVar id
@@ -269,10 +285,8 @@ genCodeStmt stmt = case stmt of
     
   CondElse expr@(ETyped e _) stmt1 stmt2  ->
       case e of
-        ELitTrue  -> do
-               genCodeStmt stmt1
-        ELitFalse -> do
-               genCodeStmt stmt2
+        ELitTrue  -> genCodeStmt stmt1
+        ELitFalse -> genCodeStmt stmt2
         _        -> do 
                cond  <- genCodeExpr expr
                true  <- freshLabel
@@ -300,10 +314,10 @@ genCodeStmt stmt = case stmt of
     emit $ Term (BrU loop)
     emit $ Label end
 
-  SExp expr  -> genCodeExpr expr >> return ()
+  SExp expr  -> void $ genCodeExpr expr
   For idecl expr stmt  -> undefined
 
-
+-- | Generates the code of an expression.
 genCodeExpr :: Expr -> GenCode Operand
 genCodeExpr (ETyped expr t) = case expr of
   EVar id  -> do
@@ -395,9 +409,7 @@ genCodeExpr (ETyped expr t) = case expr of
     return (Reg str)
       where
         ty' = toPrimTy type'
-    
-    
-                      
+     
   ELitInt n        -> return $ Const (CI32 n)
   ELitDoub d       -> return $ Const (CD d)
   ELitTrue         -> return $ Const (CI1 True)
@@ -503,7 +515,6 @@ genCodeExpr (ETyped expr t) = case expr of
     rr <- freshLocal
     emit $ NonTerm (ILoad cond I1) (Just rr) 
     return (Reg rr)
-
 
   typedExpr         -> genCodeExpr typedExpr
   where
