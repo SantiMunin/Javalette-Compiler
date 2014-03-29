@@ -44,7 +44,7 @@ data Constant = CI32 { i32 :: Integer }
 instance Show Constant where
   show (CI32 int ) = show int
   show (CD double) = show double
-  show (CI1 bool)  = if True then "true" else "false" 
+  show (CI1 bool)  = if bool then "true" else "false" 
   show Null        = "null"
   show Undef       = "undef"
 
