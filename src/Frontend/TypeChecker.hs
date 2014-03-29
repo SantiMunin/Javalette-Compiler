@@ -136,89 +136,109 @@ typeCheckDef (FnDef ret_t id args (SBlock stmts)) = do
 -- | Typechecks the validity of a given statement.
 typeCheckStmt :: Type -> Stmt -> TypeCheck (Bool, Stmt)
 typeCheckStmt funType stm = 
-    case stm of
-      Empty -> return (False, Empty)
-      BStmt (SBlock stmts) -> do
-               newBlock
-               results <- mapM (typeCheckStmt funType) stmts
-               let (rets, typedStmts) = unzip results
-               removeBlock
-               return (or rets, BStmt (SBlock typedStmts))
-      Decl t items -> do
-               typedExprs <- mapM (checkItem t) items
-               let typedItems = zipWith typeItem items typedExprs
-               mapM_ (uncurry createVarIfNotExists) $ zip (map getIdent items) (repeat t) 
-               return (False, Decl t typedItems) 
-          where
-            checkItem t (NoInit id) = return Nothing
-            checkItem t (Init id exp) = do
-                        typedExpr <- checkTypeExpr t exp 
-                        return $ Just typedExpr
-            typeItem (NoInit id) Nothing = NoInit id
-            typeItem (Init id _) (Just typedExpr) = Init id typedExpr
-            getIdent (NoInit id)    = id
-            getIdent (Init id _)    = id
-      Ass (VarI ident) exp -> do
-               expectedT <- lookupVar ident
-               typedExpr <- checkTypeExpr expectedT exp 
-               return (False, Ass (VarI ident) typedExpr)  
-      Ass (VarArr id exp1) exp2 -> do
-               exp1t@(ETyped _ t) <- checkTypeExpr Int exp1
-               arrT <- lookupVar id
-               case arrT of
-                 Array innerType ->
-                     do
-                       exp2t <- checkTypeExpr innerType exp2 
-                       return (False, Ass (VarArr id exp1t) exp2t)
-                 _               -> fail $ show id ++ " is not an array"
-      Incr ident -> 
-          lookupVar ident >>= checkTypeNum >>= (\typedExpr -> return (False, stm))
-      Decr ident -> 
-          lookupVar ident >>= checkTypeNum >>= (\typedExpr -> return (False, stm))
-      Ret exp -> 
-          checkTypeExpr funType exp >>= (\typedExpr -> return (True, Ret typedExpr))
-      VRet    -> if funType == Void then return (True, VRet)
-                 else fail "Not valid return type"
-      Cond exp stm1 -> do
-               typedExpr <- checkTypeExpr Bool exp
-               newBlock
-               (has_ret, typedStmt) <- typeCheckStmt funType stm1
-               removeBlock
-               case exp of
-                 ELitTrue -> return (has_ret, Cond typedExpr typedStmt)
-                 _        -> return (False, Cond typedExpr typedStmt) 
-      CondElse exp stm1 stm2 -> do
-               typedExpr <- checkTypeExpr Bool exp
-               newBlock
-               (ret1, typedStmt1) <- typeCheckStmt funType stm1
-               removeBlock
-               newBlock
-               (ret2, typedStmt2) <- typeCheckStmt funType stm2
-               removeBlock
-               return (ret1 || ret2, CondElse typedExpr typedStmt1 typedStmt2)
-      While exp stm' -> do
-               typedExpr <- checkTypeExpr Bool exp
-               (has_ret, typedStmt) <- typeCheckStmt funType stm'
-               return (has_ret, While typedExpr typedStmt)
-      SExp exp -> inferTypeExpr exp >>= 
-                  (\typedExpr -> return (False, SExp typedExpr))
-      For (ForDecl t id) exp@(EVar v) innerStm -> do
-               typedExpr     <- inferTypeExpr exp
-               case typedExpr of
-                 (ETyped _ (Array t')) ->
-                     do
-                       when (t /= t) $ fail $ concat [ "Can't iterate an array of type "
-                                                     ,  show t'
-                                                     , " using a var of type "
-                                                     , show t
-                                                     , "." ]
+  case stm of
+    Empty -> return (False, Empty)
+    BStmt (SBlock stmts) -> do
+      newBlock
+      results <- mapM (typeCheckStmt funType) stmts
+      let (rets, typedStmts) = unzip results
+      removeBlock
+      return (or rets, BStmt (SBlock typedStmts))
+    Decl t items -> do
+      typedExprs <- mapM (checkItem t) items
+      let typedItems = zipWith typeItem items typedExprs
+      mapM_ (uncurry createVarIfNotExists) $ zip (map getIdent items) (repeat t) 
+      return (False, Decl t typedItems) 
+        where
+          checkItem t (NoInit id) = return Nothing
+          checkItem t (Init id exp) = do
+                      typedExpr <- checkTypeExpr t exp 
+                      return $ Just typedExpr
+          typeItem (NoInit id) Nothing = NoInit id
+          typeItem (Init id _) (Just typedExpr) = Init id typedExpr
+          getIdent (NoInit id)    = id
+          getIdent (Init id _)    = id
+    Ass (VarI ident) exp -> do
+      expectedT <- lookupVar ident
+      typedExpr <- checkTypeExpr expectedT exp 
+      return (False, Ass (VarI ident) typedExpr)  
+    Ass (VarArr id exp1) exp2 -> do
+      exp1t@(ETyped _ t) <- checkTypeExpr Int exp1
+      arrT <- lookupVar id
+      case arrT of
+        Array innerType -> do
+          exp2t <- checkTypeExpr innerType exp2 
+          return (False, Ass (VarArr id exp1t) exp2t)
+        _               -> fail $ show id ++ " is not an array"
+    Incr ident -> 
+      lookupVar ident >>= checkTypeNum >>= (\typedExpr -> return (False, stm))
+    Decr ident -> 
+      lookupVar ident >>= checkTypeNum >>= (\typedExpr -> return (False, stm))
+    Ret exp -> 
+      checkTypeExpr funType exp >>= (\typedExpr -> return (True, Ret typedExpr))
+    VRet    -> if funType == Void then return (True, VRet)
+               else fail "Not valid return type"
+    Cond exp stm1 -> do
+      typedExpr <- checkTypeExpr Bool exp
+      newBlock
+      (has_ret, typedStmt) <- typeCheckStmt funType stm1
+      removeBlock
+      case exp of
+        ELitTrue -> return (has_ret, Cond typedExpr typedStmt)
+        _        -> return (False, Cond typedExpr typedStmt) 
+    CondElse exp stm1 stm2 -> do
+      typedExpr <- checkTypeExpr Bool exp
+      newBlock
+      (ret1, typedStmt1) <- typeCheckStmt funType stm1
+      removeBlock
+      newBlock
+      (ret2, typedStmt2) <- typeCheckStmt funType stm2
+      removeBlock
+      return (ret1 || ret2, CondElse typedExpr typedStmt1 typedStmt2)
+    While exp stm' -> do
+      typedExpr <- checkTypeExpr Bool exp
+      (has_ret, typedStmt) <- typeCheckStmt funType stm'
+      return (has_ret, While typedExpr typedStmt)
+    SExp exp -> inferTypeExpr exp >>= 
+                (\typedExpr -> return (False, SExp typedExpr))
+    For (ForDecl t id) exp@(EVar v) innerStm -> do
+      typedExpr     <- inferTypeExpr exp
+      case typedExpr of
+        (ETyped _ (Array t')) -> do
+           when (t /= t') $ fail $ concat [ "Can't iterate an array of type "
+                                          ,  show t'
+                                          , " using a var of type "
+                                          , show t
+                                          , "." ]
         
-                       createVarIfNotExists id t
-                       (_, typedInnerStm) <- typeCheckStmt funType innerStm
-                       deleteVar id
-                       return (False, For (ForDecl t id) typedExpr typedInnerStm)
-                 _         -> fail "The expression is not an array variable."
-      For (ForDecl t id) _ innerStm -> fail "The expression should be a variable."
+           createVarIfNotExists id t
+           (_, typedInnerStm) <- typeCheckStmt funType innerStm
+           deleteVar id
+           index  <- newSugarVar
+           length <- newSugarVar
+           return (False,
+                   (BStmt
+                    (SBlock
+                     [ Decl Int [Init index  (ETyped (ELitInt 0) Int)]
+                     , Decl Int [Init length (ETyped (EArrL v)   Int)]
+                     , Decl t'  [NoInit id]
+                     , While (ETyped (ERel
+                                      (ETyped (EVar index) Int)
+                                      LTH
+                                      (ETyped (EVar length) Int)) Bool)
+                               (BStmt
+                                (SBlock
+                                 [Ass (VarI id) (ETyped
+                                                 (EVarArr v
+                                                  (ETyped (EVar index) Int) ) t')
+                                 , Incr index
+                                 , typedInnerStm
+                                 ]))
+                     ])))
+         
+    For (ForDecl t id) _ innerStm -> fail "The expression should be a variable."
+              
+
 
 -- | Checks the type of an expresion in the given environment.
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
