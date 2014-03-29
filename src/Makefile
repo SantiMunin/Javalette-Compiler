@@ -1,5 +1,5 @@
 all:
-	ghc --make -O2 Jlc.hs -o jlc
+	ghc --make -O2 Jlc.hs -o Jlc
 bnfc:
 	bnfc -d Javalette.cf
 	happy -gca Javalette/Par.y
