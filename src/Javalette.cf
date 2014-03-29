@@ -30,11 +30,7 @@ Init.      Item ::= Ident "=" Expr ;
 
 separator nonempty Item "," ;
 
-Ass.       Stmt ::= Var "=" Expr  ";" ;
-
--- Array assignment ???
-VarArr.    Var  ::= Ident "[" Expr "]" ;
-VarI.      Var  ::= Ident ;
+Ass.       Stmt ::= Ident [DimA] "=" Expr  ";" ;
 
 Incr.      Stmt ::= Ident "++"  ";" ;
 
@@ -65,20 +61,27 @@ Bool.      Type ::= "boolean" ;
 
 Void.      Type ::= "void" ;
 
-Array.     Type ::= Type "[]";
+Dimension. Dim  ::= "[]";
+
+Array.     Type ::= Type [Dim];
+
+separator nonempty Dim "";
 
 internal   String. Type ::= "String" ;
 
 -- Expressions ---------------------------------------------
 
-EVar.      Expr6 ::= Ident;
+Var.      Expr6 ::= Ident [DimA];
 
-EVarArr.   Expr6 ::= Ident "[" Expr "]" ;
+EArrL.     Expr6 ::= Ident [DimA] "." "length" ;
 
-EArrL.     Expr6 ::= Ident "." "length" ;
+DimAddr.   DimA  ::= "[" Expr "]";
+
+separator  DimA "";
+
 
 -- Array initialization
-EArrI.   Expr6 ::= "new" Type "[" Expr "]" ;
+EArrI.   Expr6 ::= "new" Type [DimA] ;
 
 ELitInt.   Expr6 ::= Integer ;
 
@@ -112,6 +115,7 @@ coercions  Expr 6 ;
 separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]";
+internal DimT.   Type ::= Type Integer;
 
 -- operators -----------------------------------------------
 
