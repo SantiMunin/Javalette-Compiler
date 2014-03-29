@@ -1,20 +1,22 @@
+-- | Internal representation of a LLVM program. Useful in order 
+-- to make sure we are generating correct programs.
 module Backend.LLVM where
 
-import Data.List (intersperse)
+import Data.List (intercalate)
 
+-- | A label can be either a number or a string. 
+-- The numbers will be displayed as "lab" ++ n.
 data Label  = IntLab Int | SLab String
 
 instance Show Label where
   show (IntLab n) = "lab" ++ show n
   show (SLab s)   = s
-
-newtype Register = Register String
-
-instance Show Register where
-  show (Register n) = "%t" ++ n
-                      
+ 
+-- | An ID is a String.
 type Id = String
   
+-- | A LLVM type. It includes primitive (int, floating p., boolean 
+-- void, 8-bit int), pointers and arrays.
 data Ty = I32
         | D
         | I1
@@ -32,6 +34,7 @@ instance Show Ty where
   show (Ptr t) =  show t ++ "*"
   show (ArrayT t) = "%array" ++ show t
 
+-- | Constants are directly written on the target code. 
 data Constant = CI32 { i32 :: Integer }
               | CD   { d   :: Double  }
               | CI1  { i1  :: Bool }
@@ -41,19 +44,28 @@ data Constant = CI32 { i32 :: Integer }
 instance Show Constant where
   show (CI32 int ) = show int
   show (CD double) = show double
-  show (CI1 bool)  = case bool of
-                       True  -> "true"
-                       False -> "false"
+  show (CI1 bool)  = if True then "true" else "false" 
   show Null        = "null"
-  show Undef       = "undef"     
+  show Undef       = "undef"
+
+-- | A LLVM register. Shown on the target code as
+-- %t ++ name.
+newtype Register = Register String
+
+instance Show Register where
+  show (Register n) = "%t" ++ n
+
+-- | An operand can be a constant, a register, or nothing.
 data Operand = Const { const :: Constant }
              | Reg   { reg   :: Register }
              | Emp
                
 instance Show Operand where
-  show (Const cons) = show cons
-  show (Reg   reg ) = show reg
+  show (Const c) = show c
+  show (Reg   r) = show r
 
+-- | A nonterminator operation is just any operation which does not 
+-- ends a function (i.e. arithmetic, comparisons, stores, loads...).
 data NonTerminator = IAdd { op1 :: Operand
                          , op2 :: Operand
                          , ty  :: Ty }
@@ -139,89 +151,92 @@ data NonTerminator = IAdd { op1 :: Operand
                              , ty2 :: Ty }
                                       
                    | Lit { str :: String }
+
 instance Show NonTerminator where
   show nonTerm =
     case nonTerm of
-      IAdd op1 op2 ty -> concat [isD ty, "add ",show ty, " ", show op1, " ,", show op2]
-      ISub op1 op2 ty -> concat [isD ty, "sub ",show ty, " ", show op1, " ,", show op2]
-      IMul op1 op2 ty -> concat [isD ty, "mul ",show ty, " ", show op1, " ,", show op2]
-      INeg op1 ty     -> concat [isD ty, "sub ",show ty, " ", zero    , " ,", show op1]
+      IAdd a b t -> concat [isD t, "add ", show t, " ", show a, ", ", show b]
+      ISub a b t -> concat [isD t, "sub ", show t, " ", show a, ", ", show b]
+      IMul a b t -> concat [isD t, "mul ", show t, " ", show a, ", ", show b]
+      INeg a t   -> concat [isD t, "sub ", show t, " ", zero  , ", ", show a]
         where
-          zero = case ty of
+          zero = case t of
                        D   -> "0.0"
                        I32 -> "0"
-      IMod op1 op2 ty -> concat [instr, "rem ",show ty, " ", show op1, " ,", show op2]
+      IMod a b t -> concat [instr, "rem ", show t, " ", show a, ", ", show b]
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "f"
                     I32 -> "s"
-      IDiv op1 op2 ty -> concat [instr, "div ",show ty, " ", show op1, " ,", show op2]
+      IDiv a b t -> concat [instr, "div ", show t, " ", show a, ", ", show b]
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "f"
                     I32 -> "s"
 
-      ICall ty id args ->  concat [ "call " ++ show ty
+      ICall t id args ->  concat [ "call " ++ show t
                                   , " @" ++ id
-                                  , "(" ++ concat (intersperse "," ( showArgs args )) ++ ")"]
-      ILth op1 op2 ty -> concat [instr, show ty," ", show op1,", ", show op2] 
+                                  , "(" ++ intercalate "," ( showArgs args ) ++ ")"]
+      ILth a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "fcmp olt "
                     I32 -> "icmp slt "
-      ILe  op1 op2 ty ->concat [instr, show ty," ", show op1,", ", show op2] 
+      ILe  a b t ->concat [instr, show t, " ", show a, ", ", show b] 
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "fcmp ole "
                     I32 -> "icmp sle "
-      IGth op1 op2 ty -> concat [instr, show ty," ", show op1,", ", show op2] 
+      IGth a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "fcmp ogt "
                     I32 -> "icmp sgt "
-      IGe  op1 op2 ty -> concat [instr, show ty," ", show op1,", ", show op2] 
+      IGe  a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "fcmp oge "
                     I32 -> "icmp sge "
-      IEq op1 op2 ty -> concat [instr, show ty," ", show op1,", ", show op2] 
+      IEq a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "fcmp oeq "
                     I32 -> "icmp eq "
                     I1  -> "icmp eq "
                     
-      INEq op1 op2 ty ->concat [instr, show ty," ", show op1,", ", show op2] 
+      INEq a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
-          instr = case ty of
+          instr = case t of
                     D   -> "fcmp one "
                     I32 -> "icmp ne "
                     I1  -> "icmp ne "
-      IAnd op1 op2 ty -> concat ["and ", show ty, " ", show op1,", ",show op2]  
-      IOr op1  op2 ty -> concat ["or ", show ty, " ", show op1,", ",show op2]  
-      INot op1 ty -> concat["xor ", show ty," " , show op1, ", true"]
-      IAlloc ty -> concat ["alloca ", show ty]
-      ILoad addr ty -> concat ["load ", show ty,"* ", show addr]
-      IStore addr val ty -> concat ["store ",show ty, " ", show val,", ", show ty, "* ", show addr]
+      IAnd a b t -> concat ["and ", show t, " ", show a, ", ",show b]  
+      IOr a  b t -> concat ["or ", show t, " ", show a, ", ",show b]  
+      INot a t -> concat["xor ", show t, " " , show a, ", true"]
+      IAlloc t -> "alloca " ++ show t
+      ILoad addr t -> concat ["load ", show t, "* ", show addr]
+      IStore addr val t -> concat ["store ",show t, " ", show val, ", ", show t, "* ", show addr]
       Lit str -> str            
-      GetElementPtr ptr1 ptr2 sub -> concat ["getelementptr ",show ptr1," ",show ptr2, ", "
-                                            , concat . intersperse "," $ index]
+      GetElementPtr ptr1 ptr2 sub -> concat ["getelementptr ", show ptr1, " ",show ptr2, ", "
+                                            , intercalate "," index]
         where
-          index = map (\(ty,op) -> show ty ++ " " ++ show op) sub
-      BitCast ty elem ty2  -> "bitcast " ++ show ty ++ " " ++ show elem ++ " to " ++ show ty2
-      PtrToInt ty elem ty2 -> "ptrtoint " ++ show ty ++ " " ++ show elem ++ " to " ++ show ty2
+          index = map (\(t,op) -> show t ++ " " ++ show op) sub
+      BitCast t elem t2  -> "bitcast " ++ show t ++ " " ++ show elem ++ " to " ++ show t2
+      PtrToInt t elem t2 -> "ptrtoint " ++ show t ++ " " ++ show elem ++ " to " ++ show t2
     where
       isD D   = "f"
       isD I32 = ""
       showArgs = map (\(t, v) -> show t ++ " " ++ show v) 
-      cmp ty cond = case ty of
+      cmp t cond = case t of
                        I32 -> "icmp " ++ cond ++ " "
                        D   -> "fcmp " ++ cond ++ " " 
 
+-- | A terminator is a instruction that can terminate a 
+-- function or block (i.e. returns, jumps).
 data Terminator = IVRet
                 | IRet { retOp :: Operand
                        , retTy :: Ty }
-                | BrC   { cond  :: Operand
+                | BrC   { cond    :: Operand
                         , true_l  :: Label
                         , false_l :: Label
                         }
@@ -238,11 +253,14 @@ instance Show Terminator where
                                     , ", label %", show false ]
       BrU label           -> "br label %" ++ show label
       Unreachable         -> "unreachable"
-                             
+
+-- | An instruction can be a non-terminator, a terminator or a label.
 data Instr = NonTerm  NonTerminator (Maybe Register)
            | Term     Terminator
            | Label    Label
 
+-- | A function has an id, a return type, a list of arguments and a
+-- block of intructions.
 data Function = Fun { idF    :: Id
                     , tyF    :: Ty
                     , argsF  :: [(Id,Ty)]
@@ -252,10 +270,12 @@ instance Show Function where
   show (Fun name ty args blocks) = unlines $ [header] ++ map show blocks ++ ["}"]
         where
           header = concat ["define " ,show ty ," @" ,name
-                          ,"(" ,concat (intersperse "," (map showArg args))
+                          ,"(" , intercalate "," (map showArg args)
                           ,")" ," {" ]
-          showArg (id,t) = show t ++ " %t" ++ id 
+          showArg (id, t) = show t ++ " %t" ++ id 
 
+-- | A block of instructions starts with a label followed by a 
+-- list of nonterminators and finished by a terminator.
 data IBlock = IBlock { lab :: Label
                      , ins :: [(NonTerminator, Maybe Register)]
                      , ter :: Terminator }
@@ -269,31 +289,31 @@ instance Show IBlock where
     where
       indent :: String
       indent = "  "
-      showNonT (nonterm,reg) = maybe "" ((++ " = ") . show) reg ++ show nonterm
+      showNonT (nonterm, reg) = maybe "" ((++ " = ") . show) reg ++ show nonterm
 
-                                 
-
-mkFun :: Id -> Ty -> [(Id,Ty)] -> [Instr] -> Function
-
-
-         
-type Accum = Maybe (Label,[(NonTerminator,Maybe Register)])
+-- | An accumulator is an optional tuple (label, list of non-terminators). 
+type Accum = Maybe (Label, [(NonTerminator, Maybe Register)])
   
-addLabel   :: Label -> ([IBlock],Accum) -> ([IBlock],Accum)
-addLabel label (block,Nothing) = (block,Just (label,[]))
+-- | Adds a label to a block.
+addLabel :: Label -> ([IBlock], Accum) -> ([IBlock], Accum)
+addLabel label (block, Nothing) = (block, Just (label,[]))
 
-addNonTerm :: (NonTerminator,Maybe Register) -> ([IBlock],Accum) -> ([IBlock],Accum)
-addNonTerm nonterm (block, Nothing) = (block,Nothing)
-addNonTerm nonterm (block, (Just (lab,instr))) = (block,Just (lab,instr ++ [nonterm]))
+-- | Adds a non terminator operator to a block.
+addNonTerm :: (NonTerminator, Maybe Register) -> ([IBlock], Accum) -> ([IBlock], Accum)
+addNonTerm _       (block, Nothing) = (block, Nothing)
+addNonTerm nonterm (block, Just (lab, instr)) = (block, Just (lab, instr ++ [nonterm]))
 
-addTerm :: Terminator -> ([IBlock],Accum) -> ([IBlock],Accum)
-addTerm term (block,(Just (lab,nonterm))) = (block ++ [IBlock lab nonterm term],Nothing)
-addTerm term (block,Nothing)              = (block,Nothing)
+-- | Adds a terminator operator to a block.
+addTerm :: Terminator -> ([IBlock], Accum) -> ([IBlock], Accum)
+addTerm _    (block, Nothing)               = (block, Nothing)
+addTerm term (block, Just (lab, nonterm)) = (block ++ [IBlock lab nonterm term], Nothing)
                                             
-mkFun id ty args instr = Fun id ty args (go instr ([],Just (SLab "entry",[])))
+-- | Builds a functions from its components.
+mkFun :: Id -> Ty -> [(Id,Ty)] -> [Instr] -> Function
+mkFun id ty args instr = Fun id ty args (go instr ([], Just (SLab "entry", [])))
   where
     go [] (blocks, Nothing)            = blocks
-    go [] (blocks, Just (label,instr)) = blocks ++ [IBlock label instr Unreachable]
+    go [] (blocks, Just (label, instr)) = blocks ++ [IBlock label instr Unreachable]
     go (i:is) acc                     =
       case i of
         Label lab             -> go is (addLabel lab acc)
