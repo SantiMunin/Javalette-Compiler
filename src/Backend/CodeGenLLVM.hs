@@ -1,6 +1,7 @@
 {-# LANGUAGE ExistentialQuantification  #-}
 {-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 -- | LLVM code generator.
 module Backend.CodeGenLLVM (genCode) where
 
@@ -115,6 +116,10 @@ freshVar (Ident name) t = do
   let (x:xs) = localvar env
   CMS.modify (\env -> env { localvar = M.insert name (id, toPrimTy t) x : xs})
   return id
+    where
+      ty = case t of
+            Array _ -> Ptr $ toPrimTy t
+            _       -> toPrimTy t
 
 -- | Creates a new global variable name.
 freshGlobal :: GenCode Register
@@ -203,20 +208,15 @@ genCodeItem rawtype (NoInit id)    = do
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
     Array _   -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
     where
-      type' = toPrimTy rawtype
-      t = case type' of
-            ArrayT _ -> Ptr type'
-            _        -> type'
+      t = toPrimTy rawtype
+
 genCodeItem rawtype (Init id expr) = do
   val         <- genCodeExpr expr
   addr        <- freshVar id rawtype
   emit $ NonTerm (IAlloc t) (Just addr)
   emit $ NonTerm (IStore addr val t) Nothing
     where
-      type' = toPrimTy rawtype
-      t = case type' of
-            ArrayT _ -> Ptr type'
-            _        -> type'
+      t = toPrimTy rawtype
 
 -- | Generates the code of an statement.
 genCodeStmt :: Stmt -> GenCode ()
