@@ -1,6 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, RankNTypes #-}
 -- | Implements a type checker for the Javalette language.
 module Frontend.TypeChecker where
+import Debug.Trace
 
 import Javalette.ErrM
 import Javalette.Abs
@@ -243,7 +244,7 @@ checkTypeExpr t ndims exp = do
   let (DimT t' _)  = dimensionalizeType t
   typedExpr@(ETyped _ expt') <- inferTypeExpr exp
   let (DimT t_e ndims') = dimensionalizeType expt'
-  when (t' /= t_e) $ fail $ "Expresion " ++ show exp ++ " has not type " ++ show t ++ "."
+  when (t' /= t_e) $ fail $ "Expresion " ++ show exp ++ " has not type " ++ show t' ++ "."
   when (ndims /= ndims') $ fail $ "Dimensions are not equal (" ++ show ndims ++ ", " ++ show ndims' ++ ")"
   return typedExpr
 
@@ -255,7 +256,6 @@ inferTypeExpr exp =
       ELitFalse        -> return $ ETyped exp Bool
       ELitInt n        -> return $ ETyped exp Int
       ELitDoub d       -> return $ ETyped exp Doub
-      -- TODO Check
       Var id ndims     -> do
         t <- lookupVar id
         return $ ETyped exp (dimensionalizeType t)
@@ -280,10 +280,10 @@ inferTypeExpr exp =
         typedE2 <- checkTypeExpr t1 0 exp2
         return $ ETyped (EMul typedE1 op typedE2) t1 
       EAdd exp1 op exp2  -> do
-        typedE1@(ETyped _ t1)  <- inferTypeExpr exp1
+        typedE1@(ETyped _ (DimT t1 ndims))  <- inferTypeExpr exp1
         checkTypeNum t1 
         typedE2 <- checkTypeExpr t1 0 exp2
-        return $ ETyped (EAdd typedE1 op typedE2) t1  
+        return $ ETyped (EAdd typedE1 op typedE2) (DimT t1 0) 
       ERel exp1 op exp2    -> do
         t <- inferTypeCMP exp1 exp2
         typedE1 <- inferTypeExpr exp1
@@ -317,8 +317,8 @@ checkValidArrayType _         = return ()
 checkTypeNum :: Type -> TypeCheck Type
 checkTypeNum t@Int    = return t
 checkTypeNum t@Doub   = return t
-checkTypeNum t@(DimT Int 0)    = return t
-checkTypeNum t@(DimT Doub 0)   = return t
+checkTypeNum t@(DimT Int _)    = return t
+checkTypeNum t@(DimT Doub _)   = return t
 checkTypeNum t                 = fail $ "Expected type Int or Double, actual type: " ++ show t
 
 -- | Check that the arguments to a function call correspond on type and number as 
