@@ -63,7 +63,7 @@ createVarIfNotExists id t = do
   where
     t' = case t of
       Array t dims -> DimT t (fromIntegral $ length dims)
-      _          -> t
+      _            -> t
   
                               
 -- | Deletes a variable.
@@ -75,11 +75,19 @@ deleteVar id = do
 -- | Updates the function signature in the environment
 -- unless it was previously defined (in that case throws an error).
 createFunIfNotExists :: Ident -> ([Type],Type) -> TypeCheck ()
-createFunIfNotExists id types = do
+createFunIfNotExists id (argTypes, retType) = do
   fun <- CMS.gets (Map.lookup id . functions) 
   case fun of
     Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
-    Nothing -> CMS.modify (\env -> env { functions = Map.insert id (fmap dimensionalizeType types) (functions env)})
+    Nothing -> CMS.modify
+               (\env -> env { functions = Map.insert id
+                                          types' (functions env)})
+      where
+        types'  = (map toDim argTypes, toDim retType)
+        toDim t = case t of
+                     Array t dims -> DimT t (fromIntegral $ length dims)
+                     _            -> t
+  
 
 -- | Creates a new context for variables.
 newBlock :: TypeCheck ()
@@ -106,11 +114,11 @@ initializeEnv :: Program -> TypeCheck ()
 initializeEnv (Prog defs) = mapM_ addFun (initializeDefs ++ defs)
   where
     addFun (FnDef t id args _) = createFunIfNotExists id (map (\(Argument t _) -> t) args, t)
-    initializeDefs = [ FnDef Void (Ident "printInt")    [Argument (DimT Int 0) (Ident "x")]  (SBlock [])
+    initializeDefs = [ FnDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
                      -- void   printInt(int x) 
-                     , FnDef Void (Ident "printDouble") [Argument (DimT Doub 0) (Ident "x")] (SBlock [])
+                     , FnDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
                      -- void  printDouble(double x)
-                     , FnDef Void (Ident "printString") [Argument (DimT String 0) (Ident "x")] (SBlock [])
+                     , FnDef Void (Ident "printString") [Argument String (Ident "x")] (SBlock [])
                      -- void printString(String x)
                      , FnDef Int  (Ident "readInt")     []                     (SBlock [])
                      -- int readInt()             
@@ -122,12 +130,6 @@ initializeEnv (Prog defs) = mapM_ addFun (initializeDefs ++ defs)
 -- (instead of Int).
 length' :: [a] -> Integer
 length' = fromIntegral . length
-
--- | Adds dimensions information to a type in case it does not have it yet.
-dimensionalizeType :: Type -> Type
-dimensionalizeType (Array t dims) = DimT t $ length' dims
-dimensionalizeType t@(DimT _ _ )  = t
-dimensionalizeType t              = DimT t 0
 
 -- | Typechecks a program.
 typecheck :: Program -> Err Program
@@ -143,14 +145,13 @@ typecheck program = evalStateT (runType $ typeCheckProgram program) emptyEnv
 typeCheckDef :: TopDef -> TypeCheck TopDef 
 typeCheckDef (FnDef ret_t id args (SBlock stmts)) = do
   newBlock
-  mapM_ (\(Argument t idArg) -> createVarIfNotExists idArg (dimensionalizeType t)) args
-  (has_ret, BStmt typedStmts) <- typeCheckStmt dim_ret_t (BStmt (SBlock stmts))
-  unless (has_ret || dim_ret_t == DimT Void 0) $ 
+  mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) args
+  (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t (BStmt (SBlock stmts))
+  unless (has_ret || typeEq ret_t Void) $ 
     fail $ "Missing return statement in function " ++ show id
   removeBlock
   return $ FnDef ret_t id args typedStmts
-    where
-      dim_ret_t = dimensionalizeType ret_t
+
 
 -- Casts a dimension addressing to an expression.
 dimToExpr :: DimA -> Expr
@@ -168,7 +169,7 @@ exprsToDims = map DimAddr
 
 -- | Typechecks the validity of a given statement.
 typeCheckStmt :: Type -> Stmt -> TypeCheck (Bool, Stmt)
-typeCheckStmt ftype stm = 
+typeCheckStmt funType stm = 
     case stm of
       Empty -> return (False, Empty)
       BStmt (SBlock stmts) -> do
@@ -178,38 +179,42 @@ typeCheckStmt ftype stm =
                removeBlock
                return (or rets, BStmt (SBlock typedStmts))
       Decl t items -> do
-               typedExprs <- mapM (checkItem t) items
+               typedExprs <- mapM (checkItem t') items
                let typedItems = zipWith typeItem items typedExprs
-               mapM_ (uncurry createVarIfNotExists) $ zip (map getIdent items) (repeat t) 
+               mapM_ (uncurry createVarIfNotExists) $ zip (map getIdent items) (repeat t') 
                return (False, Decl t typedItems) 
           where
-            checkItem t (NoInit id) = return Nothing
-            checkItem (Array t ndims) (Init id exp) = do
-                        typedExpr <- checkTypeExpr t (length' ndims) exp 
-                        return $ Just typedExpr
+            t' = case t of
+                   Array t ndims -> DimT t (fromIntegral $ length ndims)
+                   _             -> t
+            checkItem t (NoInit id)   = return Nothing
             checkItem t (Init id exp) = do
-                        typedExpr <- checkTypeExpr t 0 exp 
+                        typedExpr <- checkTypeExpr t exp 
                         return $ Just typedExpr
             typeItem (NoInit id) Nothing = NoInit id
             typeItem (Init id _) (Just typedExpr) = Init id typedExpr
             getIdent (NoInit id)    = id
             getIdent (Init id _)    = id
+                                      
       Ass ident ndims exp -> do
-        typedAddrExpr   <- mapM (checkTypeExpr Int 0) $ dimsToExprs ndims
-        var <- lookupVar ident
-        let (DimT t varDim) = dimensionalizeType var
-        typedExpr <- checkTypeExpr t (varDim - length' ndims) exp
-        return (False, Ass ident (exprsToDims typedAddrExpr) typedExpr)  
+        typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
+        t               <- lookupVar ident
+        let dimT = case t of
+                     DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
+                     t'           -> t'
+        typedExpr       <- checkTypeExpr dimT exp
+        return (False, Ass ident (exprsToDims typedAddrExpr) typedExpr)
+
       Incr ident -> 
           lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
       Decr ident -> 
           lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
       Ret exp ->
-          checkTypeExpr funType ftdims exp >>= (\typedExpr -> return (True, Ret typedExpr))
-      VRet    -> if funType == Void then return (True, VRet)
+          checkTypeExpr funType exp >>= (\typedExpr -> return (True, Ret typedExpr))
+      VRet    -> if typeEq funType Void then return (True, VRet)
                  else fail "Not valid return type"
       Cond exp stm1 -> do
-               typedExpr <- checkTypeExpr Bool 0 exp
+               typedExpr <- checkTypeExpr Bool exp
                newBlock
                (has_ret, typedStmt) <- typeCheckStmt funType stm1
                removeBlock
@@ -217,7 +222,7 @@ typeCheckStmt ftype stm =
                  ELitTrue -> return (has_ret, Cond typedExpr typedStmt)
                  _        -> return (False, Cond typedExpr typedStmt) 
       CondElse exp stm1 stm2 -> do
-               typedExpr <- checkTypeExpr Bool 0 exp
+               typedExpr <- checkTypeExpr Bool exp
                newBlock
                (ret1, typedStmt1) <- typeCheckStmt funType stm1
                -- Cleans the current block.
@@ -227,12 +232,12 @@ typeCheckStmt ftype stm =
                removeBlock
                return (ret1 || ret2, CondElse typedExpr typedStmt1 typedStmt2)
       While exp stm' -> do
-               typedExpr <- checkTypeExpr Bool 0 exp
+               typedExpr <- checkTypeExpr Bool exp
                (has_ret, typedStmt) <- typeCheckStmt funType stm'
                return (has_ret, While typedExpr typedStmt)
       SExp exp -> inferTypeExpr exp >>= 
                   (\typedExpr -> return (False, SExp typedExpr))
-{-      For (ForDecl t id) exp@(EVar v) innerStm -> do
+  {-    For (ForDecl t id) exp@(EVar v) innerStm -> do
                typedExpr     <- inferTypeExpr exp
                case typedExpr of
                  (ETyped _ (Array t')) ->
@@ -271,19 +276,28 @@ typeCheckStmt ftype stm =
 
       --TODO for
       st        -> error $ "Unrecognized statement: " ++ show st
-  where
-    (DimT funType ftdims) = dimensionalizeType ftype
 
 
+
+                            
+-- | Calculate type equality with dimensional check.
+typeEq :: Type -> Type -> Bool
+typeEq (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
+typeEq (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
+typeEq t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
+typeEq t1             t2             =  t1 == t2
+                                       
 -- | Checks the type of an expresion in the given environment.
-checkTypeExpr :: Type -> Integer -> Expr -> TypeCheck Expr
-checkTypeExpr t ndims exp = do
-  -- Makes sure the given type is dimensionalized
-  let (DimT t' _)  = dimensionalizeType t
+checkTypeExpr :: Type -> Expr -> TypeCheck Expr
+checkTypeExpr t exp = do
   typedExpr@(ETyped _ expt') <- inferTypeExpr exp
-  let (DimT t_e ndims') = dimensionalizeType expt'
-  when (t' /= t_e) $ fail $ "Expresion " ++ show exp ++ " has not type " ++ show t' ++ "."
-  when (ndims /= ndims') $ fail $ "Dimensions are not equal (" ++ show ndims ++ ", " ++ show ndims' ++ ")"
+  when (not $ typeEq t expt') $
+       fail $ concat ["Expresion "
+                     , show exp
+                     , " has not type "
+                     , show t
+                     , ", instead has "
+                     , show expt', "."]
   return typedExpr
 
 -- | Infers the type of a expression in the given environment.
@@ -296,15 +310,15 @@ inferTypeExpr exp =
       ELitDoub d       -> return $ ETyped exp Doub
       Var id ndims     -> do
         t <- lookupVar id
-        return $ ETyped exp (dimensionalizeType t)
+        return $ ETyped exp t
       EArrL id eDims    -> do
         (DimT t ndims) <- lookupVar id
         when (length' eDims > ndims) $ fail "Indexing failure: Too many dimensions"
-        typedEDims <- mapM (checkTypeExpr Int 0) (dimsToExprs eDims)
-        return (ETyped (EArrL id (exprsToDims typedEDims)) (DimT Int 0))
+        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+        return (ETyped (EArrL id (exprsToDims typedEDims)) Int)
       EArrI t eDims     -> do
         let ndims = fromIntegral $ length eDims
-        typedEDims <- mapM (checkTypeExpr Int 0) (dimsToExprs eDims)
+        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
         checkValidArrayType t
         return (ETyped (EArrI t (exprsToDims typedEDims)) (DimT t ndims))
       EString s        -> return $ ETyped exp String
@@ -315,13 +329,13 @@ inferTypeExpr exp =
       EMul exp1 op exp2  -> do
         typedE1@(ETyped _ t1)  <- inferTypeExpr exp1
         checkTypeNum t1 
-        typedE2 <- checkTypeExpr t1 0 exp2
+        typedE2 <- checkTypeExpr t1 exp2
         return $ ETyped (EMul typedE1 op typedE2) t1 
       EAdd exp1 op exp2  -> do
-        typedE1@(ETyped _ (DimT t1 ndims))  <- inferTypeExpr exp1
+        typedE1@(ETyped _ t1)  <- inferTypeExpr exp1
         checkTypeNum t1 
-        typedE2 <- checkTypeExpr t1 0 exp2
-        return $ ETyped (EAdd typedE1 op typedE2) (DimT t1 0) 
+        typedE2 <- checkTypeExpr t1 exp2
+        return $ ETyped (EAdd typedE1 op typedE2)  t1 
       ERel exp1 op exp2    -> do
         t <- inferTypeCMP exp1 exp2
         typedE1 <- inferTypeExpr exp1
@@ -329,20 +343,20 @@ inferTypeExpr exp =
         return $ ETyped (ERel typedE1 op typedE2) t
       
       EAnd exp1 exp2   -> do 
-                         typedE1 <- checkTypeExpr Bool 0 exp1
-                         typedE2 <- checkTypeExpr Bool 0 exp2
-                         return $ ETyped (EAnd typedE1 typedE2) Bool
+        typedE1 <- checkTypeExpr Bool exp1
+        typedE2 <- checkTypeExpr Bool exp2
+        return $ ETyped (EAnd typedE1 typedE2) Bool
       EOr exp1 exp2    -> do 
-                         typedE1 <- checkTypeExpr Bool 0 exp1
-                         typedE2 <- checkTypeExpr Bool 0 exp2
-                         return $ ETyped (EOr typedE1 typedE2) (DimT Bool 0)
+        typedE1 <- checkTypeExpr Bool exp1
+        typedE2 <- checkTypeExpr Bool exp2
+        return $ ETyped (EOr typedE1 typedE2) Bool
       Not exp          -> do
-                         typedExpr <- checkTypeExpr Bool 0 exp
-                         return $ ETyped (Not typedExpr) (DimT Bool 0)
+        typedExpr <- checkTypeExpr Bool exp
+        return $ ETyped (Not typedExpr) Bool
       Neg exp          -> do
-                         typedExpr@(ETyped _ t) <- inferTypeExpr exp
-                         checkTypeNum t
-                         return $ ETyped (Neg typedExpr) t
+        typedExpr@(ETyped _ t) <- inferTypeExpr exp
+        checkTypeNum t
+        return $ ETyped (Neg typedExpr) t
 
 -- | Checks if a type is suitable to be contained in an array.
 checkValidArrayType :: Type -> TypeCheck () 
@@ -355,8 +369,8 @@ checkValidArrayType _         = return ()
 checkTypeNum :: Type -> TypeCheck Type
 checkTypeNum t@Int    = return t
 checkTypeNum t@Doub   = return t
-checkTypeNum t@(DimT Int _)    = return t
-checkTypeNum t@(DimT Doub _)   = return t
+checkTypeNum t@(DimT Int 0)    = return t
+checkTypeNum t@(DimT Doub 0)   = return t
 checkTypeNum t                 = fail $ "Expected type Int or Double, actual type: " ++ show t
 
 -- | Check that the arguments to a function call correspond on type and number as 
@@ -367,12 +381,10 @@ checkArgs ide _  [] = fail $
   "Diferent number of arguments from declared in function " ++ show ide
 checkArgs ide [] _  = fail $ 
   "Diferent number of arguments from declared in function " ++ show ide
-checkArgs ide (t:xs) (c_t:ys) = do
-  typedExpr <- checkTypeExpr e_t ndims c_t 
+checkArgs ide (e_t:xs) (c_t:ys) = do
+  typedExpr <- checkTypeExpr e_t  c_t 
   otherTypedExpr <- checkArgs ide xs ys
   return $ typedExpr : otherTypedExpr
-  where
-    (DimT e_t ndims) = dimensionalizeType t
 
 -- | Infer the type of a comparison operator.
 inferTypeCMP :: Expr -> Expr -> TypeCheck Type
@@ -381,10 +393,10 @@ inferTypeCMP exp1 exp2 = do
     checkVoid t1
     (ETyped _ t2) <- inferTypeExpr exp2
     checkVoid t2
-    if dimensionalizeType t1 == dimensionalizeType t2 then return $ dimensionalizeType Bool
+    if typeEq t1 t2 then return Bool
     else
       fail $ "Cannot compare type " ++ show t1
                                    ++ " with type " ++ show t2
       where
-        checkVoid t = when (dimensionalizeType t == DimT Void 0) $ fail "Void is not comparable." 
+        checkVoid t = when (typeEq t Void)$ fail "Void is not comparable." 
 
