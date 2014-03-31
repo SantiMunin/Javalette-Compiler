@@ -85,7 +85,7 @@ createFunIfNotExists id (argTypes, retType) = do
       where
         types'  = (map toDim argTypes, toDim retType)
         toDim t = case t of
-                     Array t dims -> DimT t (fromIntegral $ length dims)
+                     Array t' dims -> DimT t' (fromIntegral $ length dims)
                      _            -> t
   
 
@@ -146,13 +146,15 @@ typeCheckDef :: TopDef -> TypeCheck TopDef
 typeCheckDef (FnDef ret_t id args (SBlock stmts)) = do
   newBlock
   mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) args
-  (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t (BStmt (SBlock stmts))
+  (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t' (BStmt (SBlock stmts))
   unless (has_ret || typeEq ret_t Void) $ 
     fail $ "Missing return statement in function " ++ show id
   removeBlock
-  return $ FnDef ret_t id args typedStmts
-
-
+  return $ FnDef ret_t' id args typedStmts
+    where
+      ret_t' = case ret_t of
+                 Array t' dims -> DimT t' (fromIntegral $ length dims)
+                 _             -> ret_t
 -- Casts a dimension addressing to an expression.
 dimToExpr :: DimA -> Expr
 dimToExpr (DimAddr e) = e
@@ -182,10 +184,10 @@ typeCheckStmt funType stm =
                typedExprs <- mapM (checkItem t') items
                let typedItems = zipWith typeItem items typedExprs
                mapM_ (uncurry createVarIfNotExists) $ zip (map getIdent items) (repeat t') 
-               return (False, Decl t typedItems) 
+               return (False, Decl t' typedItems) 
           where
             t' = case t of
-                   Array t ndims -> DimT t (fromIntegral $ length ndims)
+                   Array t' ndims -> DimT t' (fromIntegral $ length ndims)
                    _             -> t
             checkItem t (NoInit id)   = return Nothing
             checkItem t (Init id exp) = do
@@ -237,46 +239,28 @@ typeCheckStmt funType stm =
                return (has_ret, While typedExpr typedStmt)
       SExp exp -> inferTypeExpr exp >>= 
                   (\typedExpr -> return (False, SExp typedExpr))
-  {-    For (ForDecl t id) exp@(EVar v) innerStm -> do
-               typedExpr     <- inferTypeExpr exp
-               case typedExpr of
-                 (ETyped _ (Array t')) ->
-                   do
-                     when (t /= t') $ fail $ concat [ "Can't iterate an array of type "
-                                                    ,  show t'
-                                                    , " using a var of type "
-                                                    , show t
-                                                    , "." ]
-                     createVarIfNotExists id t
-                     (_, typedInnerStm) <- typeCheckStmt funType innerStm
-                     deleteVar id
-                     index  <- newSugarVar
-                     length <- newSugarVar
-                     return (False,
-                             (BStmt
-                              (SBlock
-                               [ Decl Int [Init index  (ETyped (ELitInt 0) Int)]
-                               , Decl Int [Init length (ETyped (EArrL v)   Int)]
-                               , Decl t'  [NoInit id]
-                               , While (ETyped (ERel
-                                                (ETyped (EVar index) Int)
-                                                LTH
-                                                (ETyped (EVar length) Int)) Bool)
-                                         (BStmt
-                                          (SBlock
-                                           [Ass (VarI id) (ETyped
-                                                           (EVarArr v
-                                                            (ETyped (EVar index) Int) ) t')
-                                           , Incr index
-                                           , typedInnerStm
-                                           ]))
-                               ])))
-         -}
+      For (ForDecl t id) exp@(Var v eDims) innerStm -> do
+               (ETyped _ (DimT t' nDims)) <- inferTypeExpr exp
+               index  <- newSugarVar
+               len    <- newSugarVar
+               typeCheckStmt funType
+                   (BStmt
+                    (SBlock
+                     [ Decl Int [Init index  (ELitInt 0)]
+                     , Decl Int [Init len (EArrL v eDims)]
+                     , Decl (DimT t' (nDims - 1)) [NoInit id]
+                     , While (ERel
+                              (Var index [])
+                              LTH
+                              (Var len []))
+                               (BStmt
+                                (SBlock
+                                 [Ass id eDims (Var v ([DimAddr (Var index [])]))
+                                 , Incr index
+                                 , innerStm
+                                 ]))
+                     ]))
       For (ForDecl t id) _ innerStm -> fail "The expression should be a variable."
-
-      --TODO for
-      st        -> error $ "Unrecognized statement: " ++ show st
-
 
 
                             
@@ -308,9 +292,13 @@ inferTypeExpr exp =
       ELitFalse        -> return $ ETyped exp Bool
       ELitInt n        -> return $ ETyped exp Int
       ELitDoub d       -> return $ ETyped exp Doub
-      Var id ndims     -> do
+      Var id eDims     -> do
         t <- lookupVar id
-        return $ ETyped exp t
+        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+        let tExpr = case t of
+                      DimT t' dims -> DimT t' (dims - fromIntegral (length eDims))
+                      _            -> t
+        return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
       EArrL id eDims    -> do
         (DimT t ndims) <- lookupVar id
         when (length' eDims > ndims) $ fail "Indexing failure: Too many dimensions"
@@ -360,7 +348,7 @@ inferTypeExpr exp =
 
 -- | Checks if a type is suitable to be contained in an array.
 checkValidArrayType :: Type -> TypeCheck () 
-checkValidArrayType Void      = fail "Cannot create an array of voids."
+checkValidArrayType Void        = fail "Cannot create an array of voids."
 checkValidArrayType (Array _ _) = fail "Cannot create an array of arrays."
 checkValidArrayType _         = return ()
 
