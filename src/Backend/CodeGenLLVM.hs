@@ -9,7 +9,7 @@ import Javalette.Abs
 import Javalette.ErrM
 import Backend.LLVM
 
-import Control.Monad                    (when, void)
+import Control.Monad                    (when, void,foldM)
 import qualified Control.Monad.Identity as CMI
 import qualified Control.Monad.State    as CMS
 import qualified Data.Map               as M
@@ -206,7 +206,7 @@ genCodeItem rawtype (NoInit id)    = do
     Int       -> emit $ NonTerm (IStore addr (Const (CI32 0))   t) Nothing
     Doub      -> emit $ NonTerm (IStore addr (Const (CD 0))     t) Nothing
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
-    Array _   -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
+    DimT _ _  -> emit $ NonTerm (IStore addr (Const Undef)      t) Nothing
     where
       t = toPrimTy rawtype
 
@@ -229,29 +229,29 @@ genCodeStmt stmt = case stmt of
     removeBlock
   Decl type' items  -> mapM_ (genCodeItem type') items
 
-  Ass (VarI id) expr  -> do
+  Ass id (DimAddr exprDim) expr  -> do
+    value     <- genCodeExpr expr
     (addr,ty) <- lookUpVar id
-    val       <- genCodeExpr expr
-    emit $ NonTerm (IStore addr val ty) Nothing 
-  
-  Ass (VarArr id index) expr -> do
-    value    <- genCodeExpr expr
-    (addr,ty@(ArrayT innerType)) <- lookUpVar id
-    index'    <- genCodeExpr index
-    strAddr  <- freshLocal
-    arrAddr  <- freshLocal
-    array    <- freshLocal
-    elemAddr <- freshLocal
-    element  <- freshLocal
-    emit $ NonTerm (ILoad addr (Ptr ty)) (Just strAddr)
-    emit $ NonTerm (GetElementPtr (Ptr ty) (Reg strAddr) [ (I32, Const (CI32 0))
-                                                         , (I32, Const (CI32 1))])
-                    (Just arrAddr)
-    
-    emit $ NonTerm (ILoad arrAddr (Ptr innerType)) (Just array)
-    emit $ NonTerm (GetElementPtr (Ptr innerType) (Reg array) [(I32, index')])
-                   (Just elemAddr)
-    emit $ NonTerm (IStore elemAddr value innerType) Nothing
+    case ty of
+      ArrayT t' -> do
+        elemAddr <- foldM
+                    (\addr index -> do     
+                       index'    <- genCodeExpr index
+                       strAddr  <- freshLocal
+                       arrAddr  <- freshLocal
+                       array    <- freshLocal
+                       elemAddr <- freshLocal
+                       element  <- freshLocal
+                       emit $ NonTerm (ILoad addr ty) (Just strAddr)
+                       emit $ NonTerm (GetElementPtr (Ptr ty) (Reg strAddr) [(I32, Const (CI32 1))])
+                              (Just arrAddr)
+                       emit $ NonTerm (ILoad arrAddr (Ptr t')) (Just array)
+                       emit $ NonTerm (GetElementPtr (Ptr t') (Reg array) [(I32, index')])
+                              (Just elemAddr)
+                       return elemAddr) addr exprDim
+        emit $ NonTerm (IStore elemAddr value t') Nothing
+      _         ->  emit $ NonTerm (IStore addr val ty) Nothing 
+
 
   Incr id       -> do
     (addr,ty) <- lookUpVar id
@@ -320,11 +320,30 @@ genCodeStmt stmt = case stmt of
 -- | Generates the code of an expression.
 genCodeExpr :: Expr -> GenCode Operand
 genCodeExpr (ETyped expr t) = case expr of
-  EVar id  -> do
+  Var id indexes -> do
     (addr,ty) <- lookUpVar id
-    rr <- freshLocal
-    emit $ NonTerm (ILoad addr ty) (Just rr)
-    return (Reg rr)
+    element   <- freshLocal
+    case ty of
+      DimT ty' nDim -> do
+           index    <- mapM (genCodeExpr . (\DimAddr e -> e)) indexes
+           strAddr  <- freshLocal
+           arrAddr  <- freshLocal
+           array    <- freshLocal
+           elemAddr <- freshLocal
+           element  <- freshLocal
+           emit $ NonTerm (ILoad addr (Ptr ty)) (Just strAddr)
+           emit $ NonTerm (GetElementPtr (Ptr ty) (Reg strAddr) [ (I32, Const (CI32 0))
+                                                                , (I32, Const (CI32 1))])
+                  (Just arrAddr)
+                  
+           emit $ NonTerm (ILoad arrAddr (Ptr t')) (Just array)
+           emit $ NonTerm (GetElementPtr (Ptr t') (Reg array) [(I32, index)])
+                  (Just elemAddr)
+           emit $ NonTerm (ILoad elemAddr t') (Just element)
+
+      ty            -> emit $ NonTerm (ILoad addr ty) (Just element)
+                       
+    return (Reg element)
            
   EVarArr id expr    -> do
     (addr,ty@(ArrayT innerType)) <- lookUpVar id
