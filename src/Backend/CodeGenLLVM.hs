@@ -124,8 +124,6 @@ freshVar (Ident name) t = do
   let (x:xs) = localvar env
   CMS.modify (\env -> env { localvar = M.insert name (id, toPrimTy t) x : xs})
   return id
-    where
-      ty = toPrimTy t
 
 -- | Creates a new global variable name.
 freshGlobal :: GenCode Register
@@ -154,7 +152,10 @@ toPrimTy t = case t of
                Doub       -> D
                Void       -> V
                Bool       -> I1
+               DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
+               -- THIS SHOULD NOT BE HERE
+               Array ty nDim  -> toPrimTy (DimT ty (fromIntegral $ length nDim))
 
 -- | Creates a new label.
 freshLabel :: GenCode Label
@@ -293,6 +294,62 @@ genCodeStmt stmt = case stmt of
            emit $ NonTerm (IStore elemAddr value ty') Nothing
        else
          undefined
+         {-  debuger "Calculating indexes"
+           indexes  <- mapM (genCodeExpr . (\(DimAddr e) -> e)) exprDims
+                          
+           debuger "Get the array of dimensions"
+           dimArrayAddr <- freshLocal
+           emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                             ,(I32, Const (CI32 2))])
+                  (Just dimArrayAddr)
+                  
+           dimArray     <- freshLocal
+           emit $ NonTerm (ILoad dimArrayAddr (Ptr I32)) (Just dimArray)
+                      
+           elemIndex <-
+             fmap fst  $ foldM
+                    (\(accum,dim) indx -> do
+                       partialSum  <-
+                         foldM (\partial idx ->
+                                  do
+                                    indexAddr <- freshLocal
+                                    emit $ NonTerm (GetElementPtr (Ptr I32) (Reg dimArray)
+                                                                    [(I32, idx)])
+                                           (Just indexAddr)
+                                    dimension <- freshLocal
+                                    emit $ NonTerm (ILoad indexAddr I32)
+                                           (Just dimension)
+                                    newPartial <- freshLocal
+                                    emit $ NonTerm (IMul partial (Reg dimension) I32)
+                                           (Just newPartial)
+                                    return (Reg newPartial)
+                               ) (Const (CI32 1)) (map (Const . CI32) [dim .. nDim-1])
+                       newTmp   <- freshLocal
+                       emit $ NonTerm (IMul indx partialSum I32) (Just newTmp)
+                       newAccum <- freshLocal
+                       emit $ NonTerm (IAdd accum (Reg newTmp) I32) (Just newAccum)
+                       return (Reg newAccum,dim+1)) (Const (CI32 0),1) indexes
+
+           length <- foldM
+                     (\len  expr -> do
+                        dimension <- genCodeExpr expr
+                        newLen    <- freshLocal
+                        emit $ NonTerm (IMul (Reg len) dimension I32) (Just newLen)
+                        return newLen) (Const (I32 1),[]) 
+                           (map (\(DimAddr e) -> e) exprDims)
+
+           elemArrayAddr <- freshLocal
+           emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                              ,(I32, Const (CI32 3))])
+                  (Just elemArrayAddr)
+           elemArray     <- freshLocal
+           emit $ NonTerm (ILoad elemArrayAddr (Ptr ty')) (Just elemArray)
+                   
+           elemAddr      <- freshLocal
+           emit $ NonTerm (GetElementPtr (Ptr ty') (Reg elemArray) [(I32, elemIndex)])
+                  (Just elemAddr)
+           emit $ NonTerm (IStore elemAddr value ty') Nothing
+           -}     
   Incr id       -> do
     (addr,ty) <- lookUpVar id
     rt   <- freshLocal
@@ -420,6 +477,10 @@ genCodeExpr (ETyped expr t) = case expr of
               return (Reg elem)
           else
               undefined
+      _ -> do
+        emit $ NonTerm (ILoad addr ty) (Just elem)
+        return (Reg elem)
+
   EArrL id exprDims -> do
     (addr, ty) <- lookUpVar id
     let indexedDims = fromIntegral $ length exprDims
