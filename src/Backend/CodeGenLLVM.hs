@@ -9,7 +9,7 @@ import Javalette.Abs
 import Javalette.ErrM
 import Backend.LLVM
 
-import Control.Monad                    (when, void,foldM)
+import Control.Monad                    (when, void, foldM, forM)
 import qualified Control.Monad.Identity as CMI
 import qualified Control.Monad.State    as CMS
 import qualified Data.Map               as M
@@ -35,6 +35,13 @@ initialEnv (Prog defs) = E { nextAddr  = 0
                            , code      = []
                            , globalDef = []
                            , globalvar = 0 }      
+
+debug  :: Bool
+debug  = True
+         
+debuger :: String -> GenCode ()
+debuger str = when debug (emit $ NonTerm (Lit ("\n;; " ++ str ++ "\n")) Nothing)
+
 
 -- | Searches all function definitions, so they can be used regardless 
 -- of the definition ordering (this allows mutual recursion).
@@ -74,10 +81,11 @@ headers = unlines [ "declare void @printInt(i32)"
                   , "declare i32 @readInt()"
                   , "declare double @readDouble()"
                   , "declare i8* @calloc(i32,i32)"
+                  , "declare i8* @memcpy(i8*,i8*,i32)"
                   , ""
-                  , "%arrayi32 = type {i32, i32*}"
-                  , "%arraydouble = type {i32, double*}"
-                  , "%arrayi1 = type {i32, i1*}"
+                  , "%arrayi32 = type {i32, i32, i32* , i32*}"
+                  , "%arraydouble = type {i32, i32, i32* , double*}"
+                  , "%arrayi1 = type {i32, i32, i32* , i1*}"
                   , "" ]
 
 -- | Main function, generates the program's LLVM code. 
@@ -146,7 +154,7 @@ toPrimTy t = case t of
                Doub       -> D
                Void       -> V
                Bool       -> I1
-               Array t' _ -> ArrayT (toPrimTy t')
+               DimT ty n  -> ArrayT (toPrimTy ty) n
 
 -- | Creates a new label.
 freshLabel :: GenCode Label
@@ -230,13 +238,61 @@ genCodeStmt stmt = case stmt of
   Ass id exprDims expr  -> do
     value     <- genCodeExpr expr
     (addr,ty) <- lookUpVar id
-    case ty of
-      ArrayT _ -> do
-        (elemAddr, elemType) <- getArrPosition ty exprDims addr
-        emit $ NonTerm (IStore elemAddr value elemType) Nothing
-      _         ->  emit $ NonTerm (IStore addr value ty) Nothing 
-
-
+    if null exprDims then
+      emit $ NonTerm (IStore addr value ty) Nothing 
+     else do
+       let ArrayT ty' nDim = ty
+       if (length exprDims == (fromIntegral nDim)) then
+         do
+           debuger "Calculating indexes"
+           indexes  <- mapM (genCodeExpr . (\(DimAddr e) -> e)) exprDims
+                          
+           debuger "Get the array of dimensions"
+           dimArrayAddr <- freshLocal
+           emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                             ,(I32, Const (CI32 2))])
+                  (Just dimArrayAddr)
+                  
+           dimArray     <- freshLocal
+           emit $ NonTerm (ILoad dimArrayAddr (Ptr I32)) (Just dimArray)
+                 
+           elemIndex <-
+             fmap fst  $ foldM
+                    (\(accum,dim) indx -> do
+                       partialSum  <-
+                         foldM (\partial idx ->
+                                  do
+                                    indexAddr <- freshLocal
+                                    emit $ NonTerm (GetElementPtr (Ptr I32) (Reg dimArray)
+                                                                    [(I32, idx)])
+                                           (Just indexAddr)
+                                    dimension <- freshLocal
+                                    emit $ NonTerm (ILoad indexAddr I32)
+                                           (Just dimension)
+                                    newPartial <- freshLocal
+                                    emit $ NonTerm (IMul partial (Reg dimension) I32)
+                                           (Just newPartial)
+                                    return (Reg newPartial)
+                               ) (Const (CI32 1)) (map (Const . CI32) [dim .. nDim-1])
+                       newTmp   <- freshLocal
+                       emit $ NonTerm (IMul indx partialSum I32) (Just newTmp)
+                       newAccum <- freshLocal
+                       emit $ NonTerm (IAdd accum (Reg newTmp) I32) (Just newAccum)
+                       return (Reg newAccum,dim+1)) (Const (CI32 0),1) indexes
+                                                 
+           elemArrayAddr <- freshLocal
+           emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                              ,(I32, Const (CI32 3))])
+                  (Just elemArrayAddr)
+           elemArray     <- freshLocal
+           emit $ NonTerm (ILoad elemArrayAddr (Ptr ty')) (Just elemArray)
+                   
+           elemAddr      <- freshLocal
+           emit $ NonTerm (GetElementPtr (Ptr ty') (Reg elemArray) [(I32, elemIndex)])
+                  (Just elemAddr)
+           emit $ NonTerm (IStore elemAddr value ty') Nothing
+       else
+         undefined
   Incr id       -> do
     (addr,ty) <- lookUpVar id
     rt   <- freshLocal
@@ -299,30 +355,178 @@ genCodeStmt stmt = case stmt of
     emit $ Label end
 
   SExp expr  -> void $ genCodeExpr expr
-  For idecl expr stmt  -> undefined
+  For idecl expr stmt  -> error "Error for not declared"
 
 -- | Generates the code of an expression.
 genCodeExpr :: Expr -> GenCode Operand
 genCodeExpr (ETyped expr t) = case expr of
-  Var id indexes -> do
+  Var id index -> do
     (addr,ty) <- lookUpVar id
-    element   <- freshLocal
+    elem   <- freshLocal
     case ty of
-      ArrayT _ -> do
-        (elemAddr, ty') <- getArrPosition ty indexes addr
-        emit $ NonTerm (ILoad elemAddr ty') (Just element)
-      ty            -> emit $ NonTerm (ILoad addr ty) (Just element) 
-    return (Reg element)
-    
+      ArrayT ty' nDim ->
+        if (null index) then
+          do
+            emit $ NonTerm (ILoad addr ty) (Just elem)
+            return (Reg elem)
+        else
+          if (length index == (fromIntegral nDim)) then
+            do
+              debuger "Calculating indexes"
+              indexes  <- mapM (genCodeExpr . (\(DimAddr e) -> e)) index
+                          
+              debuger "Get the array of dimensions"
+              dimArrayAddr <- freshLocal
+              emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                                ,(I32, Const (CI32 2))])
+                     (Just dimArrayAddr)
+              
+              dimArray     <- freshLocal
+              emit $ NonTerm (ILoad dimArrayAddr (Ptr I32)) (Just dimArray)
+
+              elemIndex <- fmap fst $
+                foldM
+                (\(accum,dim) indx -> do
+                   partialSum  <-
+                     foldM (\partial idx ->
+                              do
+                                indexAddr <- freshLocal
+                                emit $ NonTerm (GetElementPtr (Ptr I32) (Reg dimArray)
+                                                                [(I32, idx)])
+                                       (Just indexAddr)
+                                dimension <- freshLocal
+                                emit $ NonTerm (ILoad indexAddr I32) (Just dimension)
+                                newPartial <- freshLocal
+                                emit $ NonTerm (IMul partial (Reg dimension) I32) (Just newPartial)
+                                return (Reg newPartial)
+                           ) (Const (CI32 1)) (map (Const . CI32) [dim .. nDim-1])
+                   newTmp   <- freshLocal
+                   emit $ NonTerm (IMul indx partialSum I32) (Just newTmp)
+                   newAccum <- freshLocal
+                   emit $ NonTerm (IAdd accum (Reg newTmp) I32) (Just newAccum)
+                   return (Reg newAccum,dim+1)) (Const (CI32 0),1) indexes
+                                                 
+              elemArrayAddr <- freshLocal
+              emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                                ,(I32, Const (CI32 3))])
+                     (Just elemArrayAddr)
+              elemArray     <- freshLocal
+              emit $ NonTerm (ILoad elemArrayAddr (Ptr ty')) (Just elemArray)
+                   
+              elemAddr      <- freshLocal
+              emit $ NonTerm (GetElementPtr (Ptr ty') (Reg elemArray) [(I32, elemIndex)])
+                     (Just elemAddr)
+              emit $ NonTerm (ILoad elemAddr ty') (Just elem)
+              return (Reg elem)
+          else
+              undefined
   EArrL id exprDims -> do
     (addr, ty) <- lookUpVar id
-    (strAddr, _) <- getArrAddr ty exprDims addr 
-    lengthAddr <- freshLocal
-    emit $ NonTerm (GetElementPtr (Ptr ty) (Reg strAddr) [(I32, Const (CI32 0)), (I32, Const (CI32 0))]) (Just lengthAddr)
-    len <- freshLocal
-    emit $ NonTerm (ILoad lengthAddr I32) (Just len)
+    let indexedDims = fromIntegral $ length exprDims
+
+    debuger "Calculating the address of the indexed dimension"
+    dimArrayAddr <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr) [(I32, Const (CI32 0))
+                                                      ,(I32, Const (CI32 2))])
+           (Just dimArrayAddr)
+
+    dimArray <- freshLocal
+    emit $ NonTerm (ILoad dimArrayAddr (Ptr I32)) (Just dimArray)
+    dimAddr  <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr I32) (Reg dimArray)
+                                    [(I32, Const (CI32 indexedDims))])
+           (Just dimAddr)
+
+    len <- freshLocal                
+    emit $ NonTerm (ILoad dimAddr  I32) (Just len)
     return (Reg len)
-  EArrI type' expr -> undefined
+
+  EArrI _ exprDims -> do
+    str <- freshLocal
+    emit $ NonTerm (IAlloc type') (Just str)
+
+    debuger "Calculation of total length and partial dimensions" 
+    initialLength <- freshLocal
+    emit $ NonTerm (IAdd (Const (CI32 0)) (Const (CI32 1)) I32) (Just initialLength)
+    (length,operands) <- foldM
+                          (\(len,reg) expr -> do
+                             dimension <- genCodeExpr expr
+                             newLen    <- freshLocal
+                             emit $ NonTerm (IMul (Reg len) dimension I32) (Just newLen)
+                             return (newLen,reg ++ [dimension]))
+                                              (initialLength,[]) 
+                                              (map (\(DimAddr e) -> e) exprDims)
+
+    debuger "Saving the length in the structure" 
+    lenAddr <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr type') (Reg str) [(I32, Const (CI32 0))
+                                                     ,(I32, Const (CI32 0))])
+           (Just lenAddr)
+    emit $ NonTerm (IStore lenAddr (Reg length) I32) Nothing
+
+    debuger "Saving the number of dimensions" 
+    numDimAddr <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr type') (Reg str) [(I32, Const (CI32 0))
+                                                     ,(I32, Const (CI32 1))])
+           (Just numDimAddr)
+    emit $ NonTerm (IStore numDimAddr (Const (CI32 nDim)) I32) Nothing
+
+    debuger "Allocation of array for holding partial dimensions"
+    pointerI32       <- freshLocal
+    sizeI32          <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr I32) (Const Null) [(I32, Const (CI32 1))])
+           (Just pointerI32)
+    emit $ NonTerm (PtrToInt (Ptr I32) pointerI32 I32) (Just sizeI32)
+    
+    voidi32        <- freshLocal
+    dimArray       <- freshLocal
+    emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, (Const (CI32 nDim))),(I32, Reg sizeI32)])
+                            (Just voidi32)
+    emit $ NonTerm (BitCast (Ptr I8) voidi32 (Ptr I32)) (Just dimArray)
+
+    debuger "Save the dimension array in the structure"
+    dimArrayAddr <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr type') (Reg str) [(I32, Const (CI32 0))
+                                                    ,(I32, Const (CI32 2))])
+           (Just dimArrayAddr)
+    emit $ NonTerm (IStore dimArrayAddr (Reg dimArray) (Ptr I32)) Nothing
+
+    debuger "Initialization of dimension array"
+    foldM (\index dimExpr -> 
+             do
+               elemAddr          <- freshLocal
+               emit $ NonTerm (GetElementPtr (Ptr I32) (Reg dimArray)
+                                               [(I32, Const (CI32 index))])
+                      (Just elemAddr)
+               emit $ NonTerm (IStore elemAddr dimExpr I32) Nothing
+               return (index + 1)) 0 operands
+
+    debuger "Allocate memory for the array of elements"
+    pointerE       <- freshLocal
+    sizeE          <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr ty) (Const Null) [(I32, Const (CI32 1))])
+           (Just pointerE)
+    emit $ NonTerm (PtrToInt (Ptr ty) pointerI32 I32) (Just sizeE)
+    
+    voida         <- freshLocal
+    elemArray     <- freshLocal
+    emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, (Reg length)),(I32, Reg sizeE)]) (Just voida)
+    emit $ NonTerm (BitCast (Ptr I8) voida (Ptr ty)) (Just elemArray)
+
+    debuger  "Store the array of elements"
+    elemArrayAddr <- freshLocal
+    emit $ NonTerm (GetElementPtr (Ptr type') (Reg str) [(I32, Const (CI32 0))
+                                                     ,(I32, Const (CI32 3))])
+           (Just elemArrayAddr)
+    emit $ NonTerm (IStore elemArrayAddr (Reg elemArray) (Ptr ty)) Nothing
+
+    ret_str <- freshLocal
+    emit $ NonTerm (ILoad str type') (Just ret_str)
+               
+    return (Reg ret_str)
+    where
+      type'@(ArrayT ty nDim) = toPrimTy t
+
      
   ELitInt n        -> return $ Const (CI32 n)
   ELitDoub d       -> return $ Const (CD d)
@@ -436,30 +640,3 @@ genCodeExpr (ETyped expr t) = case expr of
 
 genCodeExpr expr = error $ show expr
 
-getArrPosition :: Ty -> [DimA] -> Register -> GenCode (Register, Ty)
-getArrPosition ty exprDims addr = do
-  (arrStr, (ArrayT t)) <- getArrAddr ty (init exprDims) addr
-  let (DimAddr lastIndex) = last exprDims 
-  index <- genCodeExpr lastIndex
-  elemAddr <- freshLocal
-  emit $ NonTerm (GetElementPtr (Ptr t) (Reg arrStr) [(I32, Const (CI32 0)), (I32, Const (CI32 1)), (I32, index)]) (Just elemAddr)
-  return (elemAddr, t)
-
-getArrAddr :: Ty -> [DimA] -> Register -> GenCode (Register, Ty)
-getArrAddr ty exprDims addr = foldM (\(addr, ty') index -> do     
-                     index'    <- genCodeExpr index
-                     strAddr  <- freshLocal
-                     arrAddr  <- freshLocal
-                     array    <- freshLocal
-                     elemAddr <- freshLocal
-                     element  <- freshLocal
-                     emit $ NonTerm (ILoad addr ty') (Just strAddr)
-                     emit $ NonTerm (GetElementPtr (Ptr ty') (Reg strAddr) [(I32, Const (CI32 0)),(I32, Const (CI32 1))])
-                            (Just arrAddr)
-                     let (ArrayT t') = ty'
-                     emit $ NonTerm (ILoad arrAddr (Ptr t')) (Just array)
-                     emit $ NonTerm (GetElementPtr (Ptr t') (Reg array) [(I32, index')])
-                            (Just elemAddr)
-                     return (elemAddr, t')) (addr, ty) exprs
-  where
-    exprs = map (\(DimAddr a) -> a) exprDims

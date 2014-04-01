@@ -13,7 +13,7 @@ import Javalette.Print
    
 import Frontend.TypeChecker
 -- import qualified Backend.CodeGenJVM as JVM
--- import qualified Backend.CodeGenLLVM as LLVM
+import qualified Backend.CodeGenLLVM as LLVM
 
 import Control.Monad
     
@@ -48,7 +48,7 @@ main = do
             Ok tree -> do
               printErr "OK"
               when debug  (printErr (printTree tree))
-{-              case backend of
+              case backend of
      --           "-jvm"  -> compile JVM.genCode  successJVM
                 "-llvm" -> compile LLVM.genCode successLLVM
               where
@@ -91,4 +91,4 @@ showResult debugP ExitSuccess name msg ext = do
   when debug debugP
   printErr $ "Code generated for " ++ msg ++ " : " ++ name ++ ext
 showResult _ (ExitFailure _) _ _ _ = exitFailure
--}
+

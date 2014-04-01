@@ -23,7 +23,7 @@ data Ty = I32
         | V
         | I8
         | Ptr Ty
-        | ArrayT Ty
+        | ArrayT Ty Integer
           
 instance Show Ty where
   show I32 = "i32"
@@ -32,7 +32,7 @@ instance Show Ty where
   show V   = "void"
   show I8  = "i8"
   show (Ptr t) =  show t ++ "*"
-  show (ArrayT t) = "%array" ++ show t
+  show (ArrayT t _) = "%array" ++ show t
 
 -- | Constants are directly written on the target code. 
 data Constant = CI32 { i32 :: Integer }
@@ -152,6 +152,7 @@ data NonTerminator = IAdd { op1 :: Operand
                                       
                    | Lit { str :: String }
 
+            
 instance Show NonTerminator where
   show nonTerm =
     case nonTerm of
