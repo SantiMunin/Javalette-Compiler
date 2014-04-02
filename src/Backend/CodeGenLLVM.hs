@@ -330,8 +330,38 @@ genCodeExpr (ETyped expr t) = case expr of
                 elem <- freshLocal
                 emit $ NonTerm (ILoad elemAddr ty') (Just elem)
                 return (Reg elem)
-            else 
-              undefined
+            else
+              do
+                elemAddr <- findArrIndex ty addr index
+                strAddr <- freshLocal
+                emit $ NonTerm (IAlloc ty) (Just strAddr)
+                -- Set dims 
+                dimsAddr <- freshLocal
+                emit $ NonTerm (GetElementPtr (Ptr (Ptr I32)) (Reg addr) 
+                  [(I32, Const (CI32 0)), (I32, Const(CI32 2)), (I32, Const (CI32 (fromIntegral $ length index)))]) (Just dimsAddr)
+                newDimsAddr <- freshLocal
+                emit $ NonTerm (GetElementPtr (Ptr (Ptr I32)) (Reg strAddr) [(I32, Const (CI32 0)), (I32, Const(CI32 2))]) (Just newDimsAddr)
+                emit $ NonTerm (IStore newDimsAddr (Reg dimsAddr) ty') Nothing
+                -- Set length
+                arrLength <- foldM 
+                  (\accum idx -> do
+                    dimAddr <- freshLocal
+                    emit $ NonTerm (GetElementPtr (Ptr ty) (Reg strAddr) [(I32, Const (CI32 0)), (I32, Const(CI32 2)), (I32, idx)]) (Just dimAddr) 
+                    currentDimLen <- freshLocal
+                    emit $ NonTerm (ILoad dimAddr I32) (Just currentDimLen)
+                    newAccum <- freshLocal
+                    emit $ NonTerm (IMul accum (Reg currentDimLen) I32) (Just newAccum)
+                    return (Reg newAccum)
+                  ) (Const (CI32 1)) $ map (Const . CI32) [(fromIntegral . length) index..nDim-1]
+                newLengthAddr <- freshLocal
+                emit $ NonTerm (GetElementPtr (Ptr (Ptr I32)) (Reg strAddr) [(I32, Const (CI32 0)), (I32, Const(CI32 0))]) (Just newLengthAddr)
+                emit $ NonTerm (IStore newLengthAddr arrLength I32) Nothing
+                -- Set elemAddr
+                newElemAddr <- freshLocal
+                emit $ NonTerm (GetElementPtr (Ptr (Ptr ty')) (Reg strAddr) [(I32, Const (CI32 0)), (I32, Const(CI32 3))]) (Just newElemAddr)
+                emit $ NonTerm (IStore newElemAddr (Reg elemAddr) ty') Nothing
+                return (Reg strAddr)
+                
       _ -> do
             elem  <- freshLocal
             emit $ NonTerm (ILoad addr ty) (Just elem)
@@ -604,4 +634,3 @@ findArrIndex ty@(ArrayT ty' nDim) addr index = do
     emit $ NonTerm (GetElementPtr (Ptr ty') (Reg elemArray) [(I32, elemIndex)])
            (Just elemAddr)
     return elemAddr
-
