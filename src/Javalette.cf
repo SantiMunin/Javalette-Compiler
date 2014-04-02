@@ -115,7 +115,7 @@ coercions  Expr 6 ;
 separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]";
-internal DimT.   Type ::= "DimT" Type "{"Integer"}";
+internal DimT.   Type ::= "DimT" Type Integer;
 
 -- operators -----------------------------------------------
 
