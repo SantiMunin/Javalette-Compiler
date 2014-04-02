@@ -287,8 +287,8 @@ genCodeStmt stmt = case stmt of
             debugger "Copying memory"
             emit $ NonTerm (BitCast (Ptr ty') array    (Ptr I8)) (Just castArray1)
             emit $ NonTerm (BitCast (Ptr ty') elemAddr (Ptr I8)) (Just castArray2)
-            emit $ NonTerm (ICall (Ptr I8) "memcpy" [(Ptr I8, Reg castArray2)
-                                                    ,(Ptr I8, Reg castArray1)
+            emit $ NonTerm (ICall (Ptr I8) "memcpy" [(Ptr I8, Reg castArray1)
+                                                    ,(Ptr I8, Reg castArray2)
                                                     ,(I32,Reg sizeTotal)])
                    Nothing
                  
