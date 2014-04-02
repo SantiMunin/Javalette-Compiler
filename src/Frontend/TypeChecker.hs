@@ -240,8 +240,7 @@ typeCheckStmt funType stm =
       SExp exp -> inferTypeExpr exp >>= 
                   (\typedExpr -> return (False, SExp typedExpr))
       For (ForDecl t id) exp@(Var v eDims) innerStm -> do
-               (ETyped _ (DimT t' nDims)) <- inferTypeExpr exp
-               when (not $ typeEq t t') $ fail "For different dimmensions"
+               (ETyped _ type'@(DimT t' nDims)) <- inferTypeExpr exp
                index  <- newSugarVar
                len    <- newSugarVar
                typeCheckStmt funType
