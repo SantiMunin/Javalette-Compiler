@@ -248,14 +248,14 @@ typeCheckStmt funType stm =
                     (SBlock
                      [ Decl Int [Init index  (ELitInt 0)]
                      , Decl Int [Init len (EArrL v eDims)]
-                     , Decl (DimT t' (nDims - 1)) [NoInit id]
+                     , Decl (DimT t' (nDims -1)) [NoInit id]
                      , While (ERel
                               (Var index [])
                               LTH
                               (Var len []))
                                (BStmt
                                 (SBlock
-                                 [Ass id eDims (Var v ([DimAddr (Var index [])]))
+                                 [Ass id [] (Var v (eDims ++ [DimAddr (Var index [])]))
                                  , Incr index
                                  , innerStm
                                  ]))
