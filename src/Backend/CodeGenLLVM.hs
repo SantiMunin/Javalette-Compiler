@@ -244,7 +244,43 @@ genCodeStmt stmt = case stmt of
             elemAddr <- findArrIndex ty addr exprDims
             emit $ NonTerm (IStore elemAddr value ty') Nothing
         else
-          undefined
+          do
+            elemAddr  <- findArrIndex ty addr exprDims
+            arrayAddr <- freshLocal
+            emit $ NonTerm (GetElementPtr (Ptr ty) value [(I32, Const (CI32 0))
+                                                         ,(I32, Const (CI32 3))])
+                   (Just arrayAddr)
+
+            array <- freshLocal
+            emit $ NonTerm (ILoad arrayAddr (Ptr ty')) (Just array)
+                 
+            lenAddr <- freshLocal
+            emit $ NonTerm (GetElementPtr (Ptr ty) value [(I32, Const (CI32 0))
+                                                         ,(I32, Const (CI32 0))])
+                   (Just lenAddr)
+
+            len <- freshLocal
+            emit $ NonTerm (ILoad lenAddr I32) (Just len)
+      
+            pointerE       <- freshLocal
+            sizeE          <- freshLocal
+            emit $ NonTerm (GetElementPtr (Ptr ty') (Const Null) [(I32, Const (CI32 1))])
+                   (Just pointerE)
+            emit $ NonTerm (PtrToInt (Ptr ty) pointerE I32) (Just sizeE)
+
+            sizeTotal     <- freshLocal
+            emit $ NonTerm (IMul (Reg sizeE) (Reg len) I32) (Just sizeTotal)
+
+            castArray1    <- freshLocal
+            castArray2    <- freshLocal
+
+            emit $ NonTerm (BitCast (Ptr ty') array    (Ptr I8)) (Just castArray1)
+            emit $ NonTerm (BitCast (Ptr ty') elemAddr (Ptr I8)) (Just castArray2)
+            emit $ NonTerm (ICall (Ptr I8) "memcpy" [(Ptr I8, Reg castArray1)
+                                                    ,(Ptr I8, Reg castArray2)
+                                                    ,(I32,Reg sizeTotal)])
+                   Nothing
+                 
       _              -> emit $ NonTerm (IStore addr value ty) Nothing 
     
   Incr id       -> do
@@ -423,7 +459,7 @@ genCodeExpr (ETyped expr t) = case expr of
     sizeE          <- freshLocal
     emit $ NonTerm (GetElementPtr (Ptr ty) (Const Null) [(I32, Const (CI32 1))])
            (Just pointerE)
-    emit $ NonTerm (PtrToInt (Ptr ty) pointerI32 I32) (Just sizeE)
+    emit $ NonTerm (PtrToInt (Ptr ty) pointerE I32) (Just sizeE)
     
     voida         <- freshLocal
     elemArray     <- freshLocal
