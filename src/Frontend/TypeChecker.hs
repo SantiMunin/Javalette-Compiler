@@ -8,7 +8,7 @@ import Javalette.Abs
 
 import Data.Foldable (foldlM)
 import Data.Map (Map)
-import qualified Data.Map as Map
+import qualified Data.Map as M
 
 import Control.Monad (zipWithM_, forM, unless)
 import Control.Monad.State as CMS
@@ -16,9 +16,13 @@ import Control.Monad.State as CMS
 -- | An environment is a pair containing information about functions 
 -- and variables defined. It supports different scopes.
 data Env = Env { functions :: Functions
+               , structs   :: Structs
                , context   :: [Context]
                , sugarVar  :: Int }
 
+-- | The smoke is selling a lot
+type Structs   = Map Ident (Either Type Ident)
+                           
 -- | The functions information is a relation name ->  
 -- list of types (arguments) and the return type.
 type Functions = Map Ident ([Type], Type) 
@@ -39,7 +43,7 @@ lookupVar id = do
   look cntx
     where
       look [] = fail $ "Variable " ++ show id ++ " not declared."
-      look (top:rest) = case Map.lookup id top of
+      look (top:rest) = case M.lookup id top of
                            Nothing -> look rest
                            Just t  -> return t
 
@@ -47,7 +51,7 @@ lookupVar id = do
 lookupFun :: Ident -> TypeCheck ([Type],Type)
 lookupFun id = do
   functions <- CMS.gets functions
-  case Map.lookup id functions of
+  case M.lookup id functions of
     Nothing -> fail $ "Function " ++ show id ++ " not declared."
     Just t  -> return t
 
@@ -55,8 +59,8 @@ lookupFun id = do
 createVarIfNotExists :: Ident -> Type -> TypeCheck ()
 createVarIfNotExists id t = do
   top:rest <- CMS.gets context
-  case Map.lookup id top of
-    Nothing   -> CMS.modify (\env -> env { context = Map.insert id t' top : rest })
+  case M.lookup id top of
+    Nothing   -> CMS.modify (\env -> env { context = M.insert id t' top : rest })
     Just _    -> fail $ concat [ "Variable "
                               , show id 
                               , " already defined." ]
@@ -70,28 +74,65 @@ createVarIfNotExists id t = do
 deleteVar :: Ident -> TypeCheck ()
 deleteVar id = do
   top:rest <- CMS.gets context
-  CMS.modify (\env -> env { context =  Map.delete id top: rest })
+  CMS.modify (\env -> env { context =  M.delete id top: rest })
 
 -- | Updates the function signature in the environment
 -- unless it was previously defined (in that case throws an error).
 createFunIfNotExists :: Ident -> ([Type],Type) -> TypeCheck ()
 createFunIfNotExists id (argTypes, retType) = do
-  fun <- CMS.gets (Map.lookup id . functions) 
+  fun <- CMS.gets (M.lookup id . functions) 
   case fun of
     Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
     Nothing -> CMS.modify
-               (\env -> env { functions = Map.insert id
+               (\env -> env { functions = M.insert id
                                           types' (functions env)})
       where
         types'  = (map toDim argTypes, toDim retType)
         toDim t = case t of
                      Array t' dims -> DimT t' (fromIntegral $ length dims)
                      _            -> t
-  
+
+-- | Create a top level definition or synonim for a struct type.
+createStructDef :: TopDef -> TypeCheck ()
+createStructDef topDef = do
+  structs <- CMS.gets structs
+  case topDef of
+    StructDef name fields ->
+      do checkedFields <- forM fields checkField
+         CMS.modify
+                (\env ->
+                   env { structs = M.insert name
+                                   (Left (Struct name checkedFields)) structs})
+           where
+             checkField field@(StrField t id) =
+               case t of
+                 Str id ->
+                   case M.lookup id structs of
+                     Nothing -> fail $ "Type not defined: " ++ show id
+                     Just t' ->
+                       case t' of
+                         Left  t''  -> return $ StrField t'' id
+                         Right syn ->
+                           case M.lookup syn structs of
+                             Nothing  -> fail $ "Type not declared"
+                             Just t'' -> case t'' of
+                                           Right _   -> fail "Not possible to declare"
+                                           Left  t''' -> return $ StrField t''' id
+                                                     
+                 _      -> return field
+               
+    PtrDef t synom ->
+      case t of 
+        Str id -> CMS.modify
+                         (\env ->
+                            env { structs = M.insert id (Right synom) structs})
+        _      -> fail $ "Type definition not allowed with type: " ++ show t
+
+
 
 -- | Creates a new context for variables.
 newBlock :: TypeCheck ()
-newBlock = CMS.modify (\env -> env {context =  Map.empty : context env})
+newBlock = CMS.modify (\env -> env {context =  M.empty : context env})
 
 -- | Removes a context of variables.
 removeBlock :: TypeCheck ()
@@ -99,8 +140,9 @@ removeBlock  = CMS.modify (\env -> env { context = tail $ context env})
 
 -- | Creates an empty environment.
 emptyEnv :: Env
-emptyEnv = Env { functions   = Map.empty
+emptyEnv = Env { functions   = M.empty
                , context     = []
+               , structs     = M.empty
                , sugarVar    = 0 }
 
 newSugarVar :: TypeCheck Ident
@@ -111,9 +153,10 @@ newSugarVar = do
                
 -- | Initializes the environment, adding all the primitive functions.
 initializeEnv :: Program -> TypeCheck ()
-initializeEnv (Prog defs) = mapM_ addFun (initializeDefs ++ defs)
+initializeEnv (Prog defs) = mapM_ addDef (initializeDefs ++ defs)
   where
-    addFun (FnDef t id args _) = createFunIfNotExists id (map (\(Argument t _) -> t) args, t)
+    addDef (FnDef  t id args _)    = createFunIfNotExists id (map (\(Argument t _) -> t) args, t)
+    addDef  topDef = createStructDef topDef
     initializeDefs = [ FnDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
                      -- void   printInt(int x) 
                      , FnDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
@@ -125,11 +168,6 @@ initializeEnv (Prog defs) = mapM_ addFun (initializeDefs ++ defs)
                      , FnDef Doub (Ident "readDouble")  []                     (SBlock [])
                      -- double readDouble()
                      ]
-
--- | Returns the length of a list as an Integer 
--- (instead of Int).
-length' :: [a] -> Integer
-length' = fromIntegral . length
 
 -- | Typechecks a program.
 typecheck :: Program -> Err Program
@@ -208,8 +246,14 @@ typeCheckStmt funType stm =
                          t'           -> t'
             typedExpr       <- checkTypeExpr dimT exp
             return (False, Ass (LValVar ident (exprsToDims typedAddrExpr)) typedExpr)
-          LValStr name field -> undefined
-
+          LValStr name field -> do
+            Struct name fields <- lookupVar name
+            case lookup name . map (\(StrField t id) -> (id,t)) $ fields of
+              Nothing -> fail "Trying to reference a field that doesn't exists."
+              Just t' -> do
+                typedExpr <- checkTypeExpr t' exp
+                return (False,Ass lval typedExpr)
+                    
       Incr ident -> 
           lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
       Decr ident -> 
@@ -304,16 +348,41 @@ inferTypeExpr exp =
         return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
       Method id eDims (Ident "length") -> do
         (DimT t ndims) <- lookupVar id
-        when (length' eDims > ndims) $ fail "Indexing failure: Too many dimensions"
+        when ((fromIntegral . length) eDims > ndims)
+               $ fail "Indexing failure: Too many dimensions"
         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
         return (ETyped (Method id (exprsToDims typedEDims) (Ident "length")) Int)
       ENew t eDims     -> 
-       if null eDims then undefined
+       if null eDims then
+         case t of
+           Str name -> do
+                  structs <- CMS.gets structs
+                  case M.lookup name structs of
+                    Nothing -> fail $ "Type not defined: " ++ show name
+                    Just (Right syn)  -> fail $ "Cannot declare pointer to pointer"
+                    Just (Left type') -> return (ETyped exp type')
+           _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        else do
          let ndims = fromIntegral $ length eDims
          typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
          checkValidArrayType t
          return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
+      PtrDeRef id1 id2  -> do
+             Struct name fields <- lookupVar id1
+             case lookup name . map (\(StrField t id) -> (id,t)) $ fields of
+               Nothing -> fail "Trying to reference a field that doesn't exists."
+               Just t' -> return $ ETyped exp t'
+      ENull id  -> do
+        structs <- CMS.gets structs
+        case M.lookup id structs of
+          Nothing -> fail $ "Type not defined: " ++ show id
+          Just (Right syn )  -> do
+            case M.lookup syn structs of
+              Nothing -> fail $ "Type does not exists"
+              Just (Right syn)  -> fail $ "Cannot type pointer to pointer"
+              Just (Left type') -> return (ETyped (NullC type') type')
+          Just (Left type')  -> fail $ "Struct type is not a pointer." 
+      
       EString s        -> return $ ETyped exp String
       EApp id args     -> do
         (args_type, ret_type) <- lookupFun id 

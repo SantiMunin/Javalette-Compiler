@@ -6,7 +6,7 @@ Prog.      Program ::= [TopDef] ;
 
 FnDef.	   TopDef ::= Type Ident "(" [Arg] ")" Block ;
 
-StructDef. TopDef ::= "struct" Type "{" [SArg] "}"";";
+StructDef. TopDef ::= "struct" Ident "{" [SField] "}"";";
 
 PtrDef.    TopDef ::= "typedef" "struct" Type "*" Ident";";
 
@@ -16,9 +16,9 @@ Argument.  Arg ::= Type Ident;
 
 separator  Arg "," ;
 
-StrArg.   SArg ::= Arg;
+StrField.  SField ::= Type Ident;
 
-separator SArg ";";
+separator  SField ";";
 
 -- statements ----------------------------------------------
 
@@ -75,8 +75,10 @@ Dimension. Dim  ::= "[]";
 
 Array.     Type ::= Type [Dim];
 
-Struct.    Type ::= Ident;
+Str.       Type ::= Ident;
 separator nonempty Dim "";
+
+internal Struct. Type  ::= Ident [SField];
 
 internal   String. Type ::= "String" ;
 
