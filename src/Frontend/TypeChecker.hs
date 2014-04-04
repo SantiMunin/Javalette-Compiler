@@ -198,14 +198,17 @@ typeCheckStmt funType stm =
             getIdent (NoInit id)    = id
             getIdent (Init id _)    = id
                                       
-      Ass ident ndims exp -> do
-        typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
-        t               <- lookupVar ident
-        let dimT = case t of
-                     DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
-                     t'           -> t'
-        typedExpr       <- checkTypeExpr dimT exp
-        return (False, Ass ident (exprsToDims typedAddrExpr) typedExpr)
+      Ass lval exp -> 
+        case lval of
+          LValVar ident ndims -> do
+            typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
+            t               <- lookupVar ident
+            let dimT = case t of
+                         DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
+                         t'           -> t'
+            typedExpr       <- checkTypeExpr dimT exp
+            return (False, Ass (LValVar ident (exprsToDims typedAddrExpr)) typedExpr)
+          LValStr name field -> undefined
 
       Incr ident -> 
           lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
@@ -247,7 +250,7 @@ typeCheckStmt funType stm =
                    (BStmt
                     (SBlock
                      [ Decl Int [Init index  (ELitInt 0)]
-                     , Decl Int [Init len (EArrL v eDims)]
+                     , Decl Int [Init len (Method v eDims (Ident "length"))]
                      , Decl (DimT t' (nDims -1)) [NoInit id]
                      , While (ERel
                               (Var index [])
@@ -255,7 +258,7 @@ typeCheckStmt funType stm =
                               (Var len []))
                                (BStmt
                                 (SBlock
-                                 [Ass id [] (Var v (eDims ++ [DimAddr (Var index [])]))
+                                 [Ass (LValVar id []) (Var v (eDims ++ [DimAddr (Var index [])]))
                                  , Incr index
                                  , innerStm
                                  ]))
@@ -299,16 +302,18 @@ inferTypeExpr exp =
                       DimT t' dims -> DimT t' (dims - fromIntegral (length eDims))
                       _            -> t
         return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
-      EArrL id eDims    -> do
+      Method id eDims (Ident "length") -> do
         (DimT t ndims) <- lookupVar id
         when (length' eDims > ndims) $ fail "Indexing failure: Too many dimensions"
         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
-        return (ETyped (EArrL id (exprsToDims typedEDims)) Int)
-      EArrI t eDims     -> do
-        let ndims = fromIntegral $ length eDims
-        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
-        checkValidArrayType t
-        return (ETyped (EArrI t (exprsToDims typedEDims)) (DimT t ndims))
+        return (ETyped (Method id (exprsToDims typedEDims) (Ident "length")) Int)
+      ENew t eDims     -> 
+       if null eDims then undefined
+       else do
+         let ndims = fromIntegral $ length eDims
+         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+         checkValidArrayType t
+         return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
       EString s        -> return $ ETyped exp String
       EApp id args     -> do
         (args_type, ret_type) <- lookupFun id 
