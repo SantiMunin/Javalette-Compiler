@@ -9,23 +9,26 @@ import Javalette.Abs
 import Data.Foldable (foldlM)
 import Data.Map (Map)
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 import Control.Monad (zipWithM_, forM, unless)
 import Control.Monad.State as CMS
+import Types
 
 -- | An environment is a pair containing information about functions 
 -- and variables defined. It supports different scopes.
-data Env = Env { functions :: Functions
-               , structs   :: Structs
-               , context   :: [Context]
-               , sugarVar  :: Int }
-
--- | The smoke is selling a lot
-type Structs   = Map Ident (Either Type Ident)
+data Env = Env { functions   :: FunctionHeaders
+               , structs     :: Map Ident Type
+               , pointers    :: Map Ident Ident
+               , context     :: [Context]
+               , sugarVar    :: Int }
                            
+-- | Relation between pointers an the pointed structure.
+type Pointers = Map Ident Ident
+
 -- | The functions information is a relation name ->  
 -- list of types (arguments) and the return type.
-type Functions = Map Ident ([Type], Type) 
+type FunctionHeaders = Map Ident ([Type], Type) 
 
 -- | A context is a relation identifier -> (type, number of dimensions) 
 -- (variables).
@@ -93,40 +96,26 @@ createFunIfNotExists id (argTypes, retType) = do
                      _            -> t
 
 -- | Create a top level definition or synonim for a struct type.
-createStructDef :: TopDef -> TypeCheck ()
-createStructDef topDef = do
-  structs <- CMS.gets structs
+createStructDef :: S.Set Ident -> TopDef -> TypeCheck ()
+createStructDef names topDef = do
   case topDef of
     StructDef name fields ->
       do checkedFields <- forM fields checkField
          CMS.modify
                 (\env ->
-                   env { structs = M.insert name
-                                   (Left (Struct name checkedFields)) structs})
+                   env { structs = M.insert name (Struct name checkedFields) $ structs env})
            where
-             checkField field@(StrField t id) =
-               case t of
-                 Str id ->
-                   case M.lookup id structs of
-                     Nothing -> fail $ "Type not defined: " ++ show id
-                     Just t' ->
-                       case t' of
-                         Left  t''  -> return $ StrField t'' id
-                         Right syn ->
-                           case M.lookup syn structs of
-                             Nothing  -> fail $ "Type not declared"
-                             Just t'' -> case t'' of
-                                           Right _   -> fail "Not possible to declare"
-                                           Left  t''' -> return $ StrField t''' id
-                                                     
-                 _      -> return field
+             checkField field@(StrField t id) = 
+              case t of
+                (Str name) -> do
+                  when (not $ S.member name names) $
+                       fail $ "Cannot create a pointer to the undefined type: " ++ show name
+                  return field
+                _                -> return field
                
-    PtrDef t synom ->
-      case t of 
-        Str id -> CMS.modify
-                         (\env ->
-                            env { structs = M.insert id (Right synom) structs})
-        _      -> fail $ "Type definition not allowed with type: " ++ show t
+    PtrDef (Str structName) synom -> do
+      when (not $ S.member structName names) $ fail $ "Cannot create a pointer to the undefined type: " ++ show structName
+      CMS.modify (\env -> env { pointers = M.insert structName synom $ pointers env}) 
 
 
 
@@ -141,8 +130,9 @@ removeBlock  = CMS.modify (\env -> env { context = tail $ context env})
 -- | Creates an empty environment.
 emptyEnv :: Env
 emptyEnv = Env { functions   = M.empty
-               , context     = []
                , structs     = M.empty
+               , pointers    = M.empty
+               , context     = []
                , sugarVar    = 0 }
 
 newSugarVar :: TypeCheck Ident
@@ -152,11 +142,13 @@ newSugarVar = do
   return (Ident $ '_' : show var)
                
 -- | Initializes the environment, adding all the primitive functions.
-initializeEnv :: Program -> TypeCheck ()
-initializeEnv (Prog defs) = mapM_ addDef (initializeDefs ++ defs)
+initializeEnv :: [TopDef] -> [TopDef] -> TypeCheck ()
+initializeEnv structs functions = do
+  names <- foldM selectName S.empty structs
+  mapM_ (createStructDef names) structs 
+  mapM_ addDef (initializeDefs ++ functions)
   where
     addDef (FnDef  t id args _)    = createFunIfNotExists id (map (\(Argument t _) -> t) args, t)
-    addDef  topDef = createStructDef topDef
     initializeDefs = [ FnDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
                      -- void   printInt(int x) 
                      , FnDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
@@ -168,16 +160,29 @@ initializeEnv (Prog defs) = mapM_ addDef (initializeDefs ++ defs)
                      , FnDef Doub (Ident "readDouble")  []                     (SBlock [])
                      -- double readDouble()
                      ]
+    --TODO what happens if name == int? :troll:
+    selectName :: S.Set Ident -> TopDef -> TypeCheck (S.Set Ident)
+    selectName set (PtrDef _ name) = do
+      when (S.member name set) $ fail "Pointer definition: name already exists."
+      return $ S.insert name set
+    selectName set (StructDef name _) = do
+      when (S.member name set) $ fail "Structure definition: name already exists."
+      return $ S.insert name set
 
 -- | Typechecks a program.
-typecheck :: Program -> Err Program
+typecheck :: Program -> Err (Structs, Program)
 typecheck program = evalStateT (runType $ typeCheckProgram program) emptyEnv
   where
-    typeCheckProgram :: Program -> TypeCheck Program
+    typeCheckProgram :: Program -> TypeCheck (Structs, Program)
     typeCheckProgram (Prog defs) = do
-    initializeEnv program
-    typedDefs <- mapM typeCheckDef defs
-    return (Prog typedDefs)
+      let (structDefs, funDefs) = splitDefinitions program
+      initializeEnv structDefs funDefs
+      typedDefs <- mapM typeCheckDef funDefs
+      structs   <- CMS.gets structs
+      return (structs, Prog typedDefs)
+    splitDefinitions (Prog defs) = fmap reverse $ foldl select ([], []) defs
+    select (stDefs, funDefs) def@(FnDef _ _ _ _) = (stDefs, def:funDefs)
+    select (stDefs, funDefs) def                 = (def:stDefs, funDefs)
 
 -- | Typechecks a function definition.
 typeCheckDef :: TopDef -> TypeCheck TopDef 
@@ -193,6 +198,8 @@ typeCheckDef (FnDef ret_t id args (SBlock stmts)) = do
       ret_t' = case ret_t of
                  Array t' dims -> DimT t' (fromIntegral $ length dims)
                  _             -> ret_t
+typeCheckDef other = return other
+
 -- Casts a dimension addressing to an expression.
 dimToExpr :: DimA -> Expr
 dimToExpr (DimAddr e) = e
@@ -252,7 +259,7 @@ typeCheckStmt funType stm =
               Nothing -> fail "Trying to reference a field that doesn't exists."
               Just t' -> do
                 typedExpr <- checkTypeExpr t' exp
-                return (False,Ass lval typedExpr)
+                return (False, Ass lval typedExpr)
                     
       Incr ident -> 
           lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
@@ -358,9 +365,8 @@ inferTypeExpr exp =
            Str name -> do
                   structs <- CMS.gets structs
                   case M.lookup name structs of
-                    Nothing -> fail $ "Type not defined: " ++ show name
-                    Just (Right syn)  -> fail $ "Cannot declare pointer to pointer"
-                    Just (Left type') -> return (ETyped exp type')
+                    Nothing             -> fail $ "Type not defined: " ++ show name
+                    Just structType@(Struct structName _) -> return (ETyped exp (Pointer (Str structName)))
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        else do
          let ndims = fromIntegral $ length eDims
@@ -373,16 +379,14 @@ inferTypeExpr exp =
                Nothing -> fail "Trying to reference a field that doesn't exists."
                Just t' -> return $ ETyped exp t'
       ENull id  -> do
-        structs <- CMS.gets structs
-        case M.lookup id structs of
-          Nothing -> fail $ "Type not defined: " ++ show id
-          Just (Right syn )  -> do
-            case M.lookup syn structs of
+        pointers <- CMS.gets pointers
+        structs  <- CMS.gets structs
+        case M.lookup id pointers of
+          Nothing        -> fail $ "Type not defined: " ++ show id
+          Just structName  -> do
+            case M.lookup structName structs of
               Nothing -> fail $ "Type does not exists"
-              Just (Right syn)  -> fail $ "Cannot type pointer to pointer"
-              Just (Left type') -> return (ETyped (NullC type') type')
-          Just (Left type')  -> fail $ "Struct type is not a pointer." 
-      
+              Just struct  -> return (ETyped (NullC struct) (Pointer (Str structName)))
       EString s        -> return $ ETyped exp String
       EApp id args     -> do
         (args_type, ret_type) <- lookupFun id 
