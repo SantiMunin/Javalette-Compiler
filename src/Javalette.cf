@@ -81,7 +81,7 @@ separator nonempty Dim "";
 
 internal Struct. Type  ::= Ident [SField];
 
-internal Pointer. Type ::= Type;
+internal Pointer. Type ::= Ident;
 
 internal   String. Type ::= "String" ;
 
