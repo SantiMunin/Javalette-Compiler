@@ -6,6 +6,7 @@ module Backend.CodeGenLLVM (genCode) where
 import Javalette.Abs
 import Javalette.ErrM
 import Backend.LLVM
+import Types
 
 import Control.Monad                    (when, void, foldM, forM)
 import qualified Control.Monad.Identity as CMI
@@ -35,7 +36,7 @@ initialEnv (Prog defs) = E { nextAddr  = 0
                            , globalvar = 0 }      
 
 debug  :: Bool
-debug  = True
+debug  =  True
          
 debugger :: String -> GenCode ()
 debugger str = when debug (emit $ NonTerm (Lit ("\n;; " ++ str ++ "\n")) Nothing)
@@ -87,11 +88,12 @@ headers = unlines [ "declare void @printInt(i32)"
                   , "" ]
 
 -- | Main function, generates the program's LLVM code. 
-genCode :: String -> Program -> Err String
-genCode str p@(Prog defs) = do
+genCode :: String -> (Pointer,Structs,Program) -> Err String
+genCode str (Pointer,Structs,p@(Prog defs)) = do
   let (funs,s) =  runGenCode p (mapM genCodeFunction defs)
-  return $ headers ++ unlines (globalDef s) ++ concatMap show funs
-
+  return $ headers ++ userTypes ++ unlines (globalDef s) ++ concatMap show funs
+    where userTypes = unlines $ M.fold (Struct
+                      
 -- | Emits an intruction.
 emit :: Instr -> GenCode ()
 emit instruction = 
