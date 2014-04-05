@@ -12,8 +12,8 @@ import Control.Monad                    (when, void, foldM, forM)
 import qualified Control.Monad.Identity as CMI
 import qualified Control.Monad.State    as CMS
 import qualified Data.Map               as M
-
-import           Data.List              (intersperse)
+import           Data.Maybe             (fromJust)
+import           Data.List              (intersperse, elemIndex)
 
 -- | State of code generator (addresses, labels, variables, 
 -- functions, global definitions, code generated...)
@@ -23,17 +23,24 @@ data Env = E { nextAddr  :: Int
              , functions :: M.Map Id (Ty, [Ty])
              , code      :: [Instr]
              , globalvar :: Int
-             , globalDef :: [String]}
+             , globalDef :: [String]
+             , structs   :: M.Map Id [(Id,Ty)] }
 
 -- | Creates an initial environment.
-initialEnv :: Program -> Env
-initialEnv (Prog defs) = E { nextAddr  = 0
-                           , nextLabel = 0
-                           , localvar = [M.empty]
-                           , functions = collectFunDefs defs
-                           , code      = []
-                           , globalDef = []
-                           , globalvar = 0 }      
+initialEnv :: Structs -> Program -> Env
+initialEnv structs (Prog defs) =
+  E { nextAddr  = 0
+    , nextLabel = 0
+    , localvar  = [M.empty]
+    , functions = collectFunDefs defs
+    , code      = []
+    , globalDef = []
+    , globalvar = 0
+    , structs   =
+      M.foldWithKey
+         (\(Ident id) (Struct _ fields) accum
+            -> M.insert id (map (\(StrField type' (Ident field))
+                                   -> (field,toPrimTy type')) fields) accum) M.empty structs}
 
 debug  :: Bool
 debug  =  True
@@ -68,32 +75,37 @@ newtype GenCode a = GenCode { runGC :: CMS.StateT Env CMI.Identity a }
     deriving (Monad, Functor, CMS.MonadState Env)
 
 -- | Unwraps the monad.
-runGenCode :: Program -> GenCode a -> (a,Env)
-runGenCode p = CMI.runIdentity . (flip CMS.runStateT) (initialEnv p) . runGC
+runGenCode :: Structs ->  Program -> GenCode a -> (a,Env)
+runGenCode p s = CMI.runIdentity . (flip CMS.runStateT) (initialEnv p s) . runGC
 
 -- | Headers of built-in functions and types. 
 -- They will be written before the rest of the program.
-headers :: String
-headers = unlines [ "declare void @printInt(i32)"
-                  , "declare void @printDouble(double)"
-                  , "declare void @printString(i8*)"
-                  , "declare i32 @readInt()"
-                  , "declare double @readDouble()"
-                  , "declare i8* @calloc(i32,i32)"
-                  , "declare i8* @memcpy(i8*,i8*,i32)"
-                  , ""
-                  , "%arrayi32 = type {i32, i32, i32* , i32*}"
-                  , "%arraydouble = type {i32, i32, i32* , double*}"
-                  , "%arrayi1 = type {i32, i32, i32* , i1*}"
-                  , "" ]
+headers :: [TopLevel]
+headers = [ FunDecl V "printInt" [I32]
+          , FunDecl V "printDouble" [D]
+          , FunDecl V "printString" [Ptr I8]
+          , FunDecl I32  "readInt" []
+          , FunDecl D "readDouble" []
+          , FunDecl (Ptr I8) "calloc" [I32,I32]
+          , FunDecl (Ptr I8) "memcpy" [Ptr I8, Ptr I8, I32]
+          , TypeDecl "arrayi32" [I32, I32, Ptr I32, Ptr I32]
+          , TypeDecl "arraydouble" [I32, I32, Ptr I32, Ptr D]
+          , TypeDecl "arrayi1" [I32, I32, Ptr I32, Ptr I1]]
 
 -- | Main function, generates the program's LLVM code. 
-genCode :: String -> (Pointer,Structs,Program) -> Err String
-genCode str (Pointer,Structs,p@(Prog defs)) = do
-  let (funs,s) =  runGenCode p (mapM genCodeFunction defs)
-  return $ headers ++ userTypes ++ unlines (globalDef s) ++ concatMap show funs
-    where userTypes = unlines $ M.fold (Struct
-                      
+genCode :: String -> (Structs,Program) -> Err String
+genCode str (structs,p@(Prog defs)) = do
+  let (funs,s) =  runGenCode structs p (mapM genCodeFunction defs)
+  return $ concat [ unlines $ map show $ headers ++ userStructs
+                  , unlines (globalDef s)
+                  , concatMap show funs ]
+    where userStructs  =
+            M.foldl
+               (\accum (Struct (Ident name) fields)
+                  -> accum ++ [TypeDecl name $
+                               map (toPrimTy . (\(StrField t _) -> t)) fields])
+               [] structs
+
 -- | Emits an intruction.
 emit :: Instr -> GenCode ()
 emit instruction = 
@@ -102,7 +114,14 @@ emit instruction =
 -- | Adds the definition of a string (which has to be global 
 -- due to the LLVM's rules).
 addGlobalStr :: Register -> String -> GenCode ()
-addGlobalStr (Register r) s = addGlobalDef $ concat ["@",r, " = internal constant [", show $ length s + 1, "x i8] c\"", s,"\\00\""]
+addGlobalStr (Register r) s =
+  addGlobalDef $ concat ["@"
+                        ,r
+                        , " = internal constant ["
+                        , show $ length s + 1
+                        , "x i8] c\""
+                        , s
+                        ,"\\00\""]
 
 -- | Adds a global definition (useful for arrays).
 addGlobalDef :: String -> GenCode ()
@@ -154,6 +173,8 @@ toPrimTy t = case t of
                Bool       -> I1
                DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
+
+               Pointer (Ident id) -> Ptr (Def id) 
                -- THIS SHOULD NOT BE HERE
                Array ty nDim  -> toPrimTy (DimT ty (fromIntegral $ length nDim))
 
@@ -297,7 +318,18 @@ genCodeStmt stmt = case stmt of
                              Nothing
                    
           _              -> emit $ NonTerm (IStore addr value ty) Nothing 
-      LValStr name field -> undefined
+      LValStr name (Ident field) -> do
+        value     <- genCodeExpr expr
+        (addr,ty@(Str fields)) <- lookUpVar name
+        let Just indx = elemIndex field $ map fst fields
+            Just ty'  = lookup field fields 
+        elemAddr <- freshLocal
+        emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr)
+                                        [(I32, Const (CI32 1))])
+                       (Just elemAddr)
+        emit $ NonTerm (IStore elemAddr value ty') Nothing
+
+                
   Incr id       -> do
     (addr,ty) <- lookUpVar id
     rt   <- freshLocal
@@ -467,8 +499,23 @@ genCodeExpr (ETyped expr t) = case expr of
     emit $ NonTerm (ILoad dimAddr  I32) (Just len)
     return (Reg len)
 
-  ENew _ exprDims -> 
-    if null exprDims then undefined
+  ENew id exprDims -> 
+    if null exprDims then do
+      let (Ident name) = t
+      fields <- CMS.gets (fromJust . M.lookup name . structs)
+      debugger "Allocate memory for the structure in the heap"
+      pointerE       <- freshLocal
+      sizeE          <- freshLocal
+      emit $ NonTerm (GetElementPtr (Ptr (Def name)) (Const Null) [(I32, Const (CI32 1))])
+             (Just pointerE)
+      emit $ NonTerm (PtrToInt (Ptr ty) pointerE I32) (Just sizeE)
+      
+      voida         <- freshLocal
+      newStr        <- freshLocal
+      emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, Const (CI32 1)),(I32, Reg sizeE)])
+                                               (Just voida)
+      emit $ NonTerm (BitCast (Ptr I8) voida (Ptr ty)) (Just newStr)
+      return (Reg newStr)
     else do 
       str <- freshLocal
       emit $ NonTerm (IAlloc type') (Just str)

@@ -75,13 +75,11 @@ Dimension. Dim  ::= "[]";
 
 Array.     Type ::= Type [Dim];
 
-Str.       Type ::= Ident;
+Pointer.   Type ::= Ident;
 
 separator nonempty Dim "";
 
 internal Struct. Type  ::= Ident [SField];
-
-internal Pointer. Type ::= Ident;
 
 internal   String. Type ::= "String" ;
 

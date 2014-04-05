@@ -107,13 +107,13 @@ createStructDef names topDef = do
            where
              checkField field@(StrField t id) = 
               case t of
-                (Str name) -> do
+                (Pointer name) -> do
                   when (not $ S.member name names) $
                        fail $ "Cannot create a pointer to the undefined type: " ++ show name
                   return field
                 _                -> return field
                
-    PtrDef (Str structName) synom -> do
+    PtrDef (Pointer structName) synom -> do
       when (not $ S.member structName names) $ fail $ "Cannot create a pointer to the undefined type: " ++ show structName
       CMS.modify (\env -> env { pointers = M.insert structName synom $ pointers env}) 
 
@@ -362,11 +362,11 @@ inferTypeExpr exp =
       ENew t eDims     -> 
        if null eDims then
          case t of
-           Str name -> do
+           Pointer name -> do
                   structs <- CMS.gets structs
                   case M.lookup name structs of
                     Nothing             -> fail $ "Type not defined: " ++ show name
-                    Just structType@(Struct structName _) -> return (ETyped exp (Pointer (Str structName)))
+                    Just structType@(Struct structName _) -> return (ETyped exp (Pointer structName))
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        else do
          let ndims = fromIntegral $ length eDims
@@ -386,7 +386,7 @@ inferTypeExpr exp =
           Just structName  -> do
             case M.lookup structName structs of
               Nothing -> fail $ "Type does not exists"
-              Just struct  -> return (ETyped (NullC struct) (Pointer (Str structName)))
+              Just struct  -> return (ETyped (NullC struct) (Pointer structName))
       EString s        -> return $ ETyped exp String
       EApp id args     -> do
         (args_type, ret_type) <- lookupFun id 
