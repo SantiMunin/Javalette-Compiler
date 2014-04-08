@@ -1,7 +1,5 @@
 #!/bin/sh
-cd src/
-make
-cd ..
+make -C src/
 cd tester/
 make
 ./Grade $* . ..

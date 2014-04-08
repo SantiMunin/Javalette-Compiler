@@ -75,7 +75,9 @@ Dimension. Dim  ::= "[]";
 
 Array.     Type ::= Type [Dim];
 
-Pointer.   Type ::= Ident;
+Ref.       Type ::= Ident;
+
+internal Pointer.   Type ::= Ident "*";
 
 separator nonempty Dim "";
 
@@ -102,7 +104,7 @@ PtrDeRef.  Expr6 ::= Ident "->" Ident;
 -- Shift-reduce
 ENull.     Expr6 ::= "(" Ident ")" "null";
 
-internal   NullC. Expr ::= Type;
+internal   NullC. Expr ::= "null";
 
 ELitInt.   Expr6 ::= Integer ;
 

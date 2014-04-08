@@ -1,4 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, RankNTypes #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TupleSections #-}
 -- | Implements a type checker for the Javalette language.
 module Frontend.TypeChecker where
 import Debug.Trace
@@ -8,8 +9,8 @@ import Javalette.Abs
 
 import Data.Foldable (foldlM)
 import Data.Map (Map)
-import qualified Data.Map as M
-import qualified Data.Set as S
+import qualified Data.Map  as M
+import qualified Data.Set  as S
 
 import Control.Monad (zipWithM_, forM, unless)
 import Control.Monad.State as CMS
@@ -63,14 +64,22 @@ createVarIfNotExists :: Ident -> Type -> TypeCheck ()
 createVarIfNotExists id t = do
   top:rest <- CMS.gets context
   case M.lookup id top of
-    Nothing   -> CMS.modify (\env -> env { context = M.insert id t' top : rest })
+    Nothing   -> do
+      t' <- checkExists t
+      CMS.modify (\env -> env { context = M.insert id t' top : rest })
     Just _    -> fail $ concat [ "Variable "
                               , show id 
                               , " already defined." ]
   where
-    t' = case t of
-      Array t dims -> DimT t (fromIntegral $ length dims)
-      _            -> t
+    checkExists t' =
+      case t' of
+        Array t dims -> return $ DimT t (fromIntegral $ length dims)
+        Ref name -> do
+               structName <- CMS.gets (M.lookup name . pointers)
+               case structName of
+                 Nothing -> fail $ "Struct with name: " ++ show name ++ " not defined."
+                 Just strName  -> return (Pointer strName)
+        _            -> return t'
   
                               
 -- | Deletes a variable.
@@ -86,37 +95,23 @@ createFunIfNotExists id (argTypes, retType) = do
   fun <- CMS.gets (M.lookup id . functions) 
   case fun of
     Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
-    Nothing -> CMS.modify
-               (\env -> env { functions = M.insert id
-                                          types' (functions env)})
+    Nothing -> do
+      argChecked <- mapM checkType argTypes
+      retChecked <- checkType retType
+      CMS.modify (\env -> env { functions = M.insert id
+                     (argChecked, retChecked) (functions env)})
       where
-        types'  = (map toDim argTypes, toDim retType)
-        toDim t = case t of
-                     Array t' dims -> DimT t' (fromIntegral $ length dims)
-                     _            -> t
+        checkType t =
+          case t of
+            Array t' dims -> return $ DimT t' (fromIntegral $ length dims)
+            Ref name ->
+              do
+                 pointers <- CMS.gets pointers
+                 case M.lookup name pointers of
+                   Nothing -> fail "Return type pointing to a non valid struct"
+                   Just strName -> return (Pointer strName)
 
--- | Create a top level definition or synonim for a struct type.
-createStructDef :: S.Set Ident -> TopDef -> TypeCheck ()
-createStructDef names topDef = do
-  case topDef of
-    StructDef name fields ->
-      do checkedFields <- forM fields checkField
-         CMS.modify
-                (\env ->
-                   env { structs = M.insert name (Struct name checkedFields) $ structs env})
-           where
-             checkField field@(StrField t id) = 
-              case t of
-                (Pointer name) -> do
-                  when (not $ S.member name names) $
-                       fail $ "Cannot create a pointer to the undefined type: " ++ show name
-                  return field
-                _                -> return field
-               
-    PtrDef (Pointer structName) synom -> do
-      when (not $ S.member structName names) $ fail $ "Cannot create a pointer to the undefined type: " ++ show structName
-      CMS.modify (\env -> env { pointers = M.insert structName synom $ pointers env}) 
-
+            _            -> return t
 
 
 -- | Creates a new context for variables.
@@ -142,32 +137,24 @@ newSugarVar = do
   return (Ident $ '_' : show var)
                
 -- | Initializes the environment, adding all the primitive functions.
-initializeEnv :: [TopDef] -> [TopDef] -> TypeCheck ()
-initializeEnv structs functions = do
-  names <- foldM selectName S.empty structs
-  mapM_ (createStructDef names) structs 
+initializeEnv ::[TopDef] -> TypeCheck ()
+initializeEnv functions = do
   mapM_ addDef (initializeDefs ++ functions)
   where
-    addDef (FnDef  t id args _)    = createFunIfNotExists id (map (\(Argument t _) -> t) args, t)
-    initializeDefs = [ FnDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
-                     -- void   printInt(int x) 
-                     , FnDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
-                     -- void  printDouble(double x)
-                     , FnDef Void (Ident "printString") [Argument String (Ident "x")] (SBlock [])
-                     -- void printString(String x)
-                     , FnDef Int  (Ident "readInt")     []                     (SBlock [])
-                     -- int readInt()             
-                     , FnDef Doub (Ident "readDouble")  []                     (SBlock [])
-                     -- double readDouble()
-                     ]
-    --TODO what happens if name == int? :troll:
-    selectName :: S.Set Ident -> TopDef -> TypeCheck (S.Set Ident)
-    selectName set (PtrDef _ name) = do
-      when (S.member name set) $ fail "Pointer definition: name already exists."
-      return $ S.insert name set
-    selectName set (StructDef name _) = do
-      when (S.member name set) $ fail "Structure definition: name already exists."
-      return $ S.insert name set
+    addDef (FnDef  t id args _)  = createFunIfNotExists id
+                                   (map (\(Argument t _) -> t) args, t)
+    initializeDefs =
+      [ FnDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
+      -- void   printInt(int x) 
+      , FnDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
+      -- void  printDouble(double x)
+      , FnDef Void (Ident "printString") [Argument String (Ident "x")] (SBlock [])
+      -- void printString(String x)
+      , FnDef Int  (Ident "readInt")     []                     (SBlock [])
+      -- int readInt()             
+      , FnDef Doub (Ident "readDouble")  []                     (SBlock [])
+      -- double readDouble()
+      ]
 
 -- | Typechecks a program.
 typecheck :: Program -> Err (Structs, Program)
@@ -175,29 +162,90 @@ typecheck program = evalStateT (runType $ typeCheckProgram program) emptyEnv
   where
     typeCheckProgram :: Program -> TypeCheck (Structs, Program)
     typeCheckProgram (Prog defs) = do
-      let (structDefs, funDefs) = splitDefinitions program
-      initializeEnv structDefs funDefs
-      typedDefs <- mapM typeCheckDef funDefs
+      let (structDefs,pointerDef , funDefs) = splitDefinitions program
+      typeCheckStructs pointerDef structDefs
+      initializeEnv funDefs
+      typedDefs <- mapM typeCheckFun funDefs
       structs   <- CMS.gets structs
       return (structs, Prog typedDefs)
-    splitDefinitions (Prog defs) = fmap reverse $ foldl select ([], []) defs
-    select (stDefs, funDefs) def@(FnDef _ _ _ _) = (stDefs, def:funDefs)
-    select (stDefs, funDefs) def                 = (def:stDefs, funDefs)
+             
+    splitDefinitions (Prog defs) = (\(a,b,c) -> (reverse a,reverse b, reverse c))
+                                   $ foldl select ([], [], []) defs
+    select (stDefs, pDefs, funDefs) def@(FnDef _ _ _ _) = (stDefs, pDefs, def:funDefs)
+    select (stDefs, pDefs, funDefs) def@(StructDef _ _) = (def:stDefs, pDefs, funDefs)
+    select (stDefs, pDefs, funDefs) def@(PtrDef _ _)    = (stDefs, def:pDefs, funDefs)
+
+typeCheckStructs :: [TopDef] -> [TopDef] -> TypeCheck ()
+typeCheckStructs pointerDefs structDefs = do
+  pointers <- foldM
+              (\m (PtrDef (Ref strName) ptr@(Ident synom)) ->
+                 if synom `elem` ["int", "double", "bool", "void"] then
+                   fail $ "Pointer has the same name as a primitive type."
+                 else
+                   case M.lookup ptr m of
+                     Nothing ->
+                       if any (\(StructDef name _) -> name == strName) structDefs
+                       then
+                         return $ M.insert ptr strName m
+                       else
+                         fail $ concat [ "Pointer "
+                                       , synom
+                                       , " not refering to a struct."]
+                     Just _  -> fail $ concat [ "Pointer "
+                                              , synom
+                                              , " already defined."]
+              ) M.empty pointerDefs
+
+  structs <- foldM
+             (\m (StructDef name fields) ->
+                case M.lookup name m of
+                  Just _  -> fail $ concat ["Struct "
+                                           , show name
+                                           , "already defined."]
+                  Nothing -> do
+                    checkedFields <-
+                      foldM
+                      (\f (StrField t id) ->
+                         case t of
+                           Ref name ->
+                             case M.lookup name pointers of
+                               Nothing ->
+                                 fail $ concat [ "Field "
+                                               , show id
+                                               , " is not a valid pointer"]
+                               Just strName ->
+                                 return $ f ++ [StrField (Pointer strName) id]
+                           _ ->  return  $ f ++ [StrField t id]
+                      ) [] fields 
+                    return $ M.insert name (Struct name checkedFields) m
+             ) M.empty structDefs
+
+  CMS.modify (\env -> env { structs  = structs
+                          , pointers = pointers})
 
 -- | Typechecks a function definition.
-typeCheckDef :: TopDef -> TypeCheck TopDef 
-typeCheckDef (FnDef ret_t id args (SBlock stmts)) = do
+typeCheckFun :: TopDef -> TypeCheck TopDef 
+typeCheckFun (FnDef ret_t id args (SBlock stmts)) = do
   newBlock
   mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) args
+  ret_t' <- checkType ret_t
+  checkedArgs <- mapM (\(Argument t idArg)
+                         -> checkType t >>= \t' -> return (Argument t' idArg)) args
   (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t' (BStmt (SBlock stmts))
-  unless (has_ret || typeEq ret_t Void) $ 
+  unless (has_ret || typeEq ret_t' Void) $ 
     fail $ "Missing return statement in function " ++ show id
   removeBlock
-  return $ FnDef ret_t' id args typedStmts
+  return $ FnDef ret_t' id checkedArgs typedStmts
     where
-      ret_t' = case ret_t of
-                 Array t' dims -> DimT t' (fromIntegral $ length dims)
-                 _             -> ret_t
+      checkType t =
+        case t of
+          Array t' dims -> return $ DimT t' (fromIntegral $ length dims)
+          Ref name -> do
+                 pointers <- CMS.gets pointers
+                 case M.lookup name pointers of
+                   Nothing -> fail "Return type pointing to a non valid struct"
+                   Just strName -> return (Pointer strName)
+          _             -> return t
 typeCheckDef other = return other
 
 -- Casts a dimension addressing to an expression.
@@ -226,22 +274,29 @@ typeCheckStmt funType stm =
                removeBlock
                return (or rets, BStmt (SBlock typedStmts))
       Decl t items -> do
+               t' <- checkType t
                typedExprs <- mapM (checkItem t') items
                let typedItems = zipWith typeItem items typedExprs
-               mapM_ (uncurry createVarIfNotExists) $ zip (map getIdent items) (repeat t') 
-               return (False, Decl t' typedItems) 
+               mapM_ (uncurry createVarIfNotExists) $
+                     zip (map getIdent items) (repeat t')
+               return (False, Decl t' typedItems)
           where
-            t' = case t of
-                   Array t' ndims -> DimT t' (fromIntegral $ length ndims)
-                   _             -> t
-            checkItem t (NoInit id)   = return Nothing
-            checkItem t (Init id exp) = do
+             checkType t =
+               case t of
+                 Array t' ndims -> return $ DimT t' (fromIntegral $ length ndims)
+                 Ref ptr -> do
+                        Just strName <- CMS.gets (M.lookup ptr . pointers)
+                        return (Pointer strName)
+                 _              -> return t
+                                   
+             checkItem t (NoInit id)   = return Nothing
+             checkItem t (Init id exp) = do
                         typedExpr <- checkTypeExpr t exp 
                         return $ Just typedExpr
-            typeItem (NoInit id) Nothing = NoInit id
-            typeItem (Init id _) (Just typedExpr) = Init id typedExpr
-            getIdent (NoInit id)    = id
-            getIdent (Init id _)    = id
+             typeItem (NoInit id) Nothing = NoInit id
+             typeItem (Init id _) (Just typedExpr) = Init id typedExpr
+             getIdent (NoInit id)    = id
+             getIdent (Init id _)    = id
                                       
       Ass lval exp -> 
         case lval of
@@ -254,13 +309,23 @@ typeCheckStmt funType stm =
             typedExpr       <- checkTypeExpr dimT exp
             return (False, Ass (LValVar ident (exprsToDims typedAddrExpr)) typedExpr)
           LValStr name field -> do
-            Struct name fields <- lookupVar name
-            case lookup name . map (\(StrField t id) -> (id,t)) $ fields of
-              Nothing -> fail "Trying to reference a field that doesn't exists."
-              Just t' -> do
-                typedExpr <- checkTypeExpr t' exp
-                return (False, Ass lval typedExpr)
-                    
+            t <- lookupVar name
+            case t of
+              Pointer strName ->
+                do str <- CMS.gets (M.lookup strName . structs)
+                   case str of
+                     Nothing -> fail $ "Struct " ++ show strName ++ " not defined." 
+                     Just (Struct _ fields) ->
+                       do case lookup field . map (\(StrField t id) -> (id,t))
+                                 $ fields of
+                            Nothing ->
+                              fail "Trying to reference a field that doesn't exists"
+                            Just t' ->
+                              do typedExpr <- checkTypeExpr t' exp
+                                 return (False, Ass lval typedExpr)
+       
+              _ -> error $ "Variable " ++ show name ++ " must be a pointer."
+            
       Incr ident -> 
           lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
       Decr ident -> 
@@ -362,11 +427,11 @@ inferTypeExpr exp =
       ENew t eDims     -> 
        if null eDims then
          case t of
-           Pointer name -> do
+           Ref structName -> do
                   structs <- CMS.gets structs
-                  case M.lookup name structs of
-                    Nothing             -> fail $ "Type not defined: " ++ show name
-                    Just structType@(Struct structName _) -> return (ETyped exp (Pointer structName))
+                  case M.lookup structName structs of
+                    Nothing  -> fail $ "Type not defined: " ++ show structName
+                    Just _   -> return (ETyped exp (Pointer structName))
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        else do
          let ndims = fromIntegral $ length eDims
@@ -374,8 +439,9 @@ inferTypeExpr exp =
          checkValidArrayType t
          return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
       PtrDeRef id1 id2  -> do
-             Struct name fields <- lookupVar id1
-             case lookup name . map (\(StrField t id) -> (id,t)) $ fields of
+             Pointer structName <- lookupVar id1
+             Just (Struct name fields) <- CMS.gets (M.lookup structName . structs)
+             case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                Nothing -> fail "Trying to reference a field that doesn't exists."
                Just t' -> return $ ETyped exp t'
       ENull id  -> do
@@ -386,7 +452,7 @@ inferTypeExpr exp =
           Just structName  -> do
             case M.lookup structName structs of
               Nothing -> fail $ "Type does not exists"
-              Just struct  -> return (ETyped (NullC struct) (Pointer structName))
+              Just struct  -> return (ETyped NullC (Pointer structName))
       EString s        -> return $ ETyped exp String
       EApp id args     -> do
         (args_type, ret_type) <- lookupFun id 
@@ -447,7 +513,14 @@ checkArgs ide _  [] = fail $
   "Diferent number of arguments from declared in function " ++ show ide
 checkArgs ide [] _  = fail $ 
   "Diferent number of arguments from declared in function " ++ show ide
-checkArgs ide (e_t:xs) (c_t:ys) = do
+checkArgs ide (e_traw:xs) (c_t:ys) = do
+  e_t <- case e_traw of
+           Ref name ->
+             do pointers <- CMS.gets (pointers)
+                case M.lookup name pointers of
+                  Nothing -> fail "hello"
+                  Just strName -> return (Pointer strName)
+           _ -> return e_traw
   typedExpr <- checkTypeExpr e_t  c_t 
   otherTypedExpr <- checkArgs ide xs ys
   return $ typedExpr : otherTypedExpr

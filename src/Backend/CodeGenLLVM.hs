@@ -173,7 +173,7 @@ toPrimTy t = case t of
                Bool       -> I1
                DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
-
+               
                Pointer (Ident id) -> Ptr (Def id) 
                -- THIS SHOULD NOT BE HERE
                Array ty nDim  -> toPrimTy (DimT ty (fromIntegral $ length nDim))
@@ -235,6 +235,7 @@ genCodeItem rawtype (NoInit id)    = do
     Doub      -> emit $ NonTerm (IStore addr (Const (CD 0))     t) Nothing
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
     DimT _ _  -> emit $ NonTerm (IStore addr (Const Undef)      t) Nothing
+    Pointer _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
     where
       t = toPrimTy rawtype
 
@@ -257,7 +258,7 @@ genCodeStmt stmt = case stmt of
     removeBlock
   Decl type' items  -> mapM_ (genCodeItem type') items
 
-  Ass lval expr  -> 
+  Ass lval expr@(ETyped _ innerType)  -> 
     case lval of
       LValVar id exprDims -> do      
         value     <- genCodeExpr expr
@@ -318,18 +319,22 @@ genCodeStmt stmt = case stmt of
                              Nothing
                    
           _              -> emit $ NonTerm (IStore addr value ty) Nothing 
-      LValStr name (Ident field) -> do
-        value     <- genCodeExpr expr
-        (addr,ty@(Str fields)) <- lookUpVar name
-        let Just indx = elemIndex field $ map fst fields
-            Just ty'  = lookup field fields 
-        elemAddr <- freshLocal
-        emit $ NonTerm (GetElementPtr (Ptr ty) (Reg addr)
-                                        [(I32, Const (CI32 1))])
-                       (Just elemAddr)
-        emit $ NonTerm (IStore elemAddr value ty') Nothing
+      LValStr var (Ident field) ->
+        do (addr,ptr@(Ptr (Def structName))) <- lookUpVar var
+           Just fields <- CMS.gets (M.lookup structName . structs)
+           let Just indx = fmap fromIntegral . elemIndex field . map fst $ fields
 
-                
+           value <- genCodeExpr expr                 
+                    
+           str <- freshLocal
+           emit $ NonTerm (ILoad addr ptr) (Just str)
+           debugger  "Calculate the address of the field"
+           fieldAddr <- freshLocal
+           emit $ NonTerm (GetElementPtr ptr (Reg str) [(I32, Const (CI32 0))
+                                                       ,(I32, Const (CI32 indx))])
+                  (Just fieldAddr)
+           emit $ NonTerm (IStore fieldAddr value (toPrimTy innerType)) Nothing
+                 
   Incr id       -> do
     (addr,ty) <- lookUpVar id
     rt   <- freshLocal
@@ -499,22 +504,21 @@ genCodeExpr (ETyped expr t) = case expr of
     emit $ NonTerm (ILoad dimAddr  I32) (Just len)
     return (Reg len)
 
-  ENew id exprDims -> 
+  ENew _ exprDims -> 
     if null exprDims then do
-      let (Ident name) = t
-      fields <- CMS.gets (fromJust . M.lookup name . structs)
+      let (Pointer (Ident name)) = t
       debugger "Allocate memory for the structure in the heap"
       pointerE       <- freshLocal
       sizeE          <- freshLocal
       emit $ NonTerm (GetElementPtr (Ptr (Def name)) (Const Null) [(I32, Const (CI32 1))])
              (Just pointerE)
-      emit $ NonTerm (PtrToInt (Ptr ty) pointerE I32) (Just sizeE)
+      emit $ NonTerm (PtrToInt (Ptr (Def name)) pointerE I32) (Just sizeE)
       
       voida         <- freshLocal
       newStr        <- freshLocal
       emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, Const (CI32 1)),(I32, Reg sizeE)])
                                                (Just voida)
-      emit $ NonTerm (BitCast (Ptr I8) voida (Ptr ty)) (Just newStr)
+      emit $ NonTerm (BitCast (Ptr I8) voida (Ptr (Def name))) (Just newStr)
       return (Reg newStr)
     else do 
       str <- freshLocal
@@ -602,7 +606,25 @@ genCodeExpr (ETyped expr t) = case expr of
       where
         type'@(ArrayT ty nDim) = toPrimTy t
 
-     
+  PtrDeRef var (Ident field) -> do
+    (addr,ptr@(Ptr (Def structName))) <- lookUpVar var
+    Just fields <- CMS.gets (M.lookup structName . structs)
+    let  Just indx = fmap fromIntegral . elemIndex field . map fst $ fields
+
+    str <- freshLocal
+    emit $ NonTerm (ILoad addr ptr) (Just str)
+    debugger  "Calculate the address of the field"
+    fieldAddr <- freshLocal
+    emit $ NonTerm (GetElementPtr ptr (Reg str) [(I32, Const (CI32 0))
+                                                 ,(I32, Const (CI32 indx))])
+             (Just fieldAddr)
+    fieldElem <- freshLocal
+    emit $ NonTerm (ILoad fieldAddr ty) (Just fieldElem)
+    return (Reg fieldElem)
+
+
+  NullC -> return (Const Null)
+                            
   ELitInt n        -> return $ Const (CI32 n)
   ELitDoub d       -> return $ Const (CD d)
   ELitTrue         -> return $ Const (CI1 True)

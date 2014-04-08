@@ -207,13 +207,14 @@ instance Show NonTerminator where
                     D   -> "fcmp oeq "
                     I32 -> "icmp eq "
                     I1  -> "icmp eq "
-                    
+                    Ptr _ -> "icmp eq " 
       INEq a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
           instr = case t of
                     D   -> "fcmp one "
                     I32 -> "icmp ne "
                     I1  -> "icmp ne "
+                    Ptr _  -> "icmp ne "
       IAnd a b t -> concat ["and ", show t, " ", show a, ", ",show b]  
       IOr a  b t -> concat ["or ", show t, " ", show a, ", ",show b]  
       INot a t -> concat["xor ", show t, " " , show a, ", true"]
