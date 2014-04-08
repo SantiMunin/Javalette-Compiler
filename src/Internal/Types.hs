@@ -1,4 +1,4 @@
-module Types where
+module Internal.Types where
 
 import Javalette.Abs
 import Data.Map
