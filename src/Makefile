@@ -1,5 +1,6 @@
 all:
 	ghc --make -O2 Jlc.hs -o Jlc
+	cp executable ../jlc
 bnfc:
 	bnfc -d Javalette.cf
 	happy -gca Javalette/Par.y
