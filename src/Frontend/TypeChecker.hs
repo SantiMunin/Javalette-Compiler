@@ -232,10 +232,18 @@ typeCheckStmt funType stm =
                newBlock
                (ret2, typedStmt2) <- typeCheckStmt funType stm2
                removeBlock
-               return (ret1 || ret2, CondElse typedExpr typedStmt1 typedStmt2)
+               let has_ret = case exp of
+                              ELitTrue  -> ret1
+                              ELitFalse -> ret2
+                              _         -> ret1 && ret2
+               return (has_ret, CondElse typedExpr typedStmt1 typedStmt2)
       While exp stm' -> do
                typedExpr <- checkTypeExpr Bool exp
-               (has_ret, typedStmt) <- typeCheckStmt funType stm'
+               (stm_has_ret, typedStmt) <- typeCheckStmt funType stm'
+               let has_ret = case exp of
+                          ELitTrue  -> has_ret
+                          ELitFalse -> False
+                          _         -> False
                return (has_ret, While typedExpr typedStmt)
       SExp exp -> inferTypeExpr exp >>= 
                   (\typedExpr -> return (False, SExp typedExpr))
