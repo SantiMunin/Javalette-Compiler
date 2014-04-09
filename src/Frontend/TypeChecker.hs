@@ -242,7 +242,6 @@ typeCheckStmt funType stm =
                (stm_has_ret, typedStmt) <- typeCheckStmt funType stm'
                let has_ret = case exp of
                           ELitTrue  -> has_ret
-                          ELitFalse -> False
                           _         -> False
                return (has_ret, While typedExpr typedStmt)
       SExp exp -> inferTypeExpr exp >>= 
