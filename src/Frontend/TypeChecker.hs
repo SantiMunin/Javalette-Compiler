@@ -147,8 +147,7 @@ typeCheckDef (FnDef ret_t id args (SBlock stmts)) = do
   newBlock
   mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) args
   (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t' (BStmt (SBlock stmts))
-  unless (has_ret || typeEq ret_t Void) $ 
-    fail $ "Missing return statement in function " ++ show id
+  unless (has_ret || typeEq ret_t Void) $ fail $ "Missing return statement in function " ++ show id
   removeBlock
   return $ FnDef ret_t' id args typedStmts
     where
