@@ -10,6 +10,8 @@ StructDef. TopDef ::= "struct" Ident "{" [SField] "}"";";
 
 PtrDef.    TopDef ::= "typedef" "struct" Type "*" Ident";";
 
+ClassDef.  TopDef ::= "class" Ident "{" [Stmt] [TopDef] "}";
+
 separator nonempty TopDef "" ;
 
 Argument.  Arg ::= Type Ident;
@@ -87,14 +89,16 @@ internal   String. Type ::= "String" ;
 
 -- Expressions ---------------------------------------------
 
-Var.       Expr6 ::= Ident [DimA];
+Var.        Expr6 ::= Ident [DimA] ;
 
-Method.    Expr6 ::= Ident [DimA] "." Ident;
+Method.     Expr6 ::= Ident [DimA] "." Ident MTail;
 
-DimAddr.   DimA  ::= "[" Expr "]";
+MTailEmpty. MTail ::= ;
+MTailExprs. MTail ::= "(" [Expr] ")";
+
+DimAddr.   DimA  ::= "[" Expr "]" ;
 
 separator  DimA "";
-
 
 -- Array initialization
 ENew.      Expr6 ::= "new" Type [DimA] ;
@@ -114,7 +118,7 @@ ELitTrue.  Expr6 ::= "true" ;
 
 ELitFalse. Expr6 ::= "false" ;
 
-EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
+EApp.      Expr6 ::= Ident "(" [Expr] ")";
 
 EString.   Expr6 ::= String ;
 

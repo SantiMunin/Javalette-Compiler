@@ -348,7 +348,7 @@ typeCheckStmt funType stm =
                    (BStmt
                     (SBlock
                      [ Decl Int [Init index  (ELitInt 0)]
-                     , Decl Int [Init len (Method v eDims (Ident "length"))]
+                     , Decl Int [Init len (Method v eDims (Ident "length") MTailEmpty) ]
                      , Decl (DimT t' (nDims -1)) [NoInit id]
                      , While (ERel
                               (Var index [])
@@ -403,12 +403,12 @@ inferTypeExpr exp =
                       _            -> t
         return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
 
-      Method id eDims (Ident "length") -> do
+      Method id eDims (Ident "length") MTailEmpty -> do
         (DimT t ndims) <- lookupVar id
         when ((fromIntegral . length) eDims > ndims)
                $ fail "Indexing failure: Too many dimensions"
         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
-        return (ETyped (Method id (exprsToDims typedEDims) (Ident "length")) Int)
+        return (ETyped (Method id (exprsToDims typedEDims) (Ident "length") MTailEmpty) Int)
 
       ENew t eDims     ->
        -- New object in the heap.

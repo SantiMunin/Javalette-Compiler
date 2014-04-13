@@ -490,7 +490,7 @@ genCodeExpr (ETyped expr t) = case expr of
             return (Reg elem)
 
   -- TODO other methods
-  Method id exprDims (Ident "length") -> do
+  Method id exprDims (Ident "length") MTailEmpty -> do
     (addr, ty) <- lookUpVar id
     let indexedDims = fromIntegral $ length exprDims
 
