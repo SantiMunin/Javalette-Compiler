@@ -1,7 +1,7 @@
 #!/bin/sh
-cd src/
-make
-cd ..
+make -C src/ clean
+make -C src/ bnfc
+make -C src/
 cd tester/
 make
 ./Grade $* . ..

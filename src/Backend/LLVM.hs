@@ -2,7 +2,7 @@
 -- to make sure we are generating correct programs.
 module Backend.LLVM where
 
-import Data.List (intercalate)
+import Data.List (intercalate, intersperse)
 
 -- | A label can be either a number or a string. 
 -- The numbers will be displayed as "lab" ++ n.
@@ -24,6 +24,8 @@ data Ty = I32
         | I8
         | Ptr Ty
         | ArrayT Ty Integer
+        | Def Id
+        | Str [(Id,Ty)]
           
 instance Show Ty where
   show I32 = "i32"
@@ -33,7 +35,8 @@ instance Show Ty where
   show I8  = "i8"
   show (Ptr t) =  show t ++ "*"
   show (ArrayT t _) = "%array" ++ show t
-
+  show (Def id) = "%" ++ id
+  
 -- | Constants are directly written on the target code. 
 data Constant = CI32 { i32 :: Integer }
               | CD   { d   :: Double  }
@@ -204,13 +207,14 @@ instance Show NonTerminator where
                     D   -> "fcmp oeq "
                     I32 -> "icmp eq "
                     I1  -> "icmp eq "
-                    
+                    Ptr _ -> "icmp eq " 
       INEq a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
           instr = case t of
                     D   -> "fcmp one "
                     I32 -> "icmp ne "
                     I1  -> "icmp ne "
+                    Ptr _  -> "icmp ne "
       IAnd a b t -> concat ["and ", show t, " ", show a, ", ",show b]  
       IOr a  b t -> concat ["or ", show t, " ", show a, ", ",show b]  
       INot a t -> concat["xor ", show t, " " , show a, ", true"]
@@ -320,3 +324,24 @@ mkFun id ty args instr = Fun id ty args (go instr ([], Just (SLab "entry", [])))
         Label lab             -> go is (addLabel lab acc)
         NonTerm nonterm reg   -> go is (addNonTerm (nonterm,reg) acc)
         Term term             -> go is (addTerm term acc)
+
+
+data TopLevel = FunDecl  Ty Id [Ty]
+              | TypeDecl Id [Ty]
+
+instance Show TopLevel where
+  show (FunDecl retType name argTypes) =
+    concat [ "declare "
+           , show retType
+           , " @"
+           , name
+           , "("
+           , concat . intersperse "," . map show $ argTypes
+           , ")" ]
+  show (TypeDecl name typeList) =
+    concat [ "%"
+           , name
+           , " = type {"
+           , concat . intersperse "," . map show $ typeList
+           , "}" ]
+  

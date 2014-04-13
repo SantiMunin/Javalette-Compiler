@@ -6,11 +6,19 @@ Prog.      Program ::= [TopDef] ;
 
 FnDef.	   TopDef ::= Type Ident "(" [Arg] ")" Block ;
 
+StructDef. TopDef ::= "struct" Ident "{" [SField] "}"";";
+
+PtrDef.    TopDef ::= "typedef" "struct" Type "*" Ident";";
+
 separator nonempty TopDef "" ;
 
 Argument.  Arg ::= Type Ident;
 
 separator  Arg "," ;
+
+StrField.  SField ::= Type Ident;
+
+separator  SField ";";
 
 -- statements ----------------------------------------------
 
@@ -30,7 +38,9 @@ Init.      Item ::= Ident "=" Expr ;
 
 separator nonempty Item "," ;
 
-Ass.       Stmt ::= Ident [DimA] "=" Expr  ";" ;
+Ass.       Stmt ::= LVal "=" Expr  ";" ;
+LValVar.   LVal ::= Ident [DimA]; 
+LValStr.   LVal ::= Ident "->" Ident;
 
 Incr.      Stmt ::= Ident "++"  ";" ;
 
@@ -65,15 +75,21 @@ Dimension. Dim  ::= "[]";
 
 Array.     Type ::= Type [Dim];
 
+Ref.       Type ::= Ident;
+
+internal Pointer.   Type ::= Ident "*";
+
 separator nonempty Dim "";
+
+internal Struct. Type  ::= Ident [SField];
 
 internal   String. Type ::= "String" ;
 
 -- Expressions ---------------------------------------------
 
-Var.      Expr6 ::= Ident [DimA];
+Var.       Expr6 ::= Ident [DimA];
 
-EArrL.     Expr6 ::= Ident [DimA] "." "length" ;
+Method.    Expr6 ::= Ident [DimA] "." Ident;
 
 DimAddr.   DimA  ::= "[" Expr "]";
 
@@ -81,7 +97,14 @@ separator  DimA "";
 
 
 -- Array initialization
-EArrI.   Expr6 ::= "new" Type [DimA] ;
+ENew.      Expr6 ::= "new" Type [DimA] ;
+
+PtrDeRef.  Expr6 ::= Ident "->" Ident;
+
+-- Shift-reduce
+ENull.     Expr6 ::= "(" Ident ")" "null";
+
+internal   NullC. Expr ::= "null";
 
 ELitInt.   Expr6 ::= Integer ;
 
