@@ -4,15 +4,23 @@ entrypoints Program ;
 
 Prog.      Program ::= [TopDef] ;
 
-FnDef.	   TopDef ::= Type Ident "(" [Arg] ")" Block ;
+-- A TopDef is either a type declaration or a top level function.
 
-StructDef. TopDef ::= "struct" Ident "{" [SField] "}"";";
+TopFnDef.    TopDef ::= FnDef;
 
-PtrDef.    TopDef ::= "typedef" "struct" Type "*" Ident";";
+FunDef.      FnDef  ::= Type Ident "(" [Arg] ")" Block ;
 
-ClassDef.  TopDef ::= "class" Ident "{" [Stmt] [TopDef] "}";
+TopTypeDecl. TopDef ::= TypeDecl;
+
+StructDef. TypeDecl ::= "struct" Ident "{" [SField] "}"";";
+PtrDef.    TypeDecl ::= "typedef" "struct" Type "*" Ident";";
+ClassDef.  TypeDecl ::= "class" Ident Hierarchy "{" [SField] [FnDef] "}";
+
+HExtend.    Hierarchy ::= "extends" Ident;
+HEmpty.     Hierarchy ::= ;
 
 separator nonempty TopDef "" ;
+separator FnDef ";";
 
 Argument.  Arg ::= Type Ident;
 

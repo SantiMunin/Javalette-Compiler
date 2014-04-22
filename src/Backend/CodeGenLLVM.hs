@@ -39,8 +39,8 @@ data Env = E { nextAddr  :: Int
              , structs   :: M.Map Id [(Id,Ty)] }
 
 -- | Creates an initial environment.
-initialEnv :: Structs -> Program -> Env
-initialEnv structs (Prog defs) =
+initialEnv :: Structs -> [FnDef] -> Env
+initialEnv structs defs =
   E { nextAddr  = 0
     , nextLabel = 0
     , localvar  = [M.empty]
@@ -56,9 +56,9 @@ initialEnv structs (Prog defs) =
 
 -- | Searches all function definitions, so they can be used regardless
 -- of the definition ordering (this allows mutual recursion).
-collectFunDefs :: [TopDef] -> M.Map String (Ty, [Ty])
+collectFunDefs :: [FnDef] -> M.Map String (Ty, [Ty])
 collectFunDefs =
-  foldl (\m (FnDef ret_t (Ident id) args _) ->
+  foldl (\m (FunDef ret_t (Ident id) args _) ->
     M.insert id (toPrimTy ret_t,
                  map (\(Argument t _) -> toPrimTy t) args) m) M.empty
 
@@ -80,8 +80,8 @@ newtype GenCode a = GenCode { runGC :: CMS.State Env a }
     deriving (Monad, Functor, CMS.MonadState Env)
 
 -- | Unwraps the monad.
-runGenCode :: Structs ->  Program -> GenCode a -> (a,Env)
-runGenCode p s = (flip CMS.runState) (initialEnv p s) . runGC
+runGenCode :: Structs -> [FnDef] -> GenCode a -> (a,Env)
+runGenCode defs s = (flip CMS.runState) (initialEnv defs s) . runGC
 
 -- | Headers of built-in functions and types.
 -- They will be written before the rest of the program.
@@ -98,9 +98,9 @@ headers = [ FunDecl V "printInt" [I32]
           , TypeDecl "arrayi1" [I32, I32, Ptr I32, Ptr I1]]
 
 -- | Main function, generates the program's LLVM code.
-genCode :: String -> (Structs,Program) -> Err String
-genCode str (structs,p@(Prog defs)) = do
-  let (funs,s) =  runGenCode structs p (mapM genCodeFunction defs)
+genCode :: String -> (Structs,[FnDef]) -> Err String
+genCode str (structs,defs) = do
+  let (funs,s) =  runGenCode structs defs (mapM genCodeFunction defs)
   return $ concat [ unlines $ map show $ headers ++ userStructs
                   , unlines (globalDef s)
                   , concatMap show funs ]
@@ -207,8 +207,8 @@ removeBlock = do
   CMS.modify (\env -> env { localvar = xs })
 
 -- | Generates the code of a function.
-genCodeFunction :: TopDef -> GenCode Function
-genCodeFunction (FnDef t (Ident id) args block) = do
+genCodeFunction :: FnDef -> GenCode Function
+genCodeFunction (FunDef t (Ident id) args block) = do
   newFunction args
   mapM_ (\(Argument t ident@(Ident id)) -> do
            addr <- freshVar ident t

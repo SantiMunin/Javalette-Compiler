@@ -125,47 +125,55 @@ newSugarVar = do
   return (Ident $ '_' : show var)
 
 -- | Initializes the environment, adding all the primitive functions.
-initializeEnv ::[TopDef] -> TypeCheck ()
+initializeEnv ::[FnDef] -> TypeCheck ()
 initializeEnv functions = do
   mapM_ addDef (initializeDefs ++ functions)
   where
-    addDef (FnDef  t id args _)  = createFunIfNotExists id
+    addDef (FunDef  t id args _)  = createFunIfNotExists id
                                    (map (\(Argument t _) -> t) args, t)
     initializeDefs =
-      [ FnDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
+      [ FunDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
       -- void   printInt(int x)
-      , FnDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
+      , FunDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
       -- void  printDouble(double x)
-      , FnDef Void (Ident "printString") [Argument String (Ident "x")] (SBlock [])
+      , FunDef Void (Ident "printString") [Argument String (Ident "x")] (SBlock [])
       -- void printString(String x)
-      , FnDef Int  (Ident "readInt")     []                     (SBlock [])
+      , FunDef Int  (Ident "readInt")     []                     (SBlock [])
       -- int readInt()
-      , FnDef Doub (Ident "readDouble")  []                     (SBlock [])
+      , FunDef Doub (Ident "readDouble")  []                     (SBlock [])
       -- double readDouble()
       ]
 
+-- | Split the top level into functions, structs, pointers and classes.
+splitDefinitions :: [TopDef] -> ([TypeDecl],[TypeDecl],[TypeDecl],[FnDef])
+splitDefinitions defs =
+  (\(a,b,c,d) -> (reverse a,reverse b, reverse c, reverse d))
+  $ foldl select ([], [], [], []) defs
+  where 
+    select (s, p, c, f) definition =
+      case definition of
+        TopFnDef def@(FunDef _ _ _ _)      -> (s, p, c, def:f)
+        TopTypeDecl def@(StructDef _ _)    -> (def:s, p, c, f)
+        TopTypeDecl def@(PtrDef _ _)       -> (s, def:p, c, f)
+        TopTypeDecl def@(ClassDef _ _ _ _) -> (s, p, def:c, f)
+                                            
 -- | Typechecks a program.
-typecheck :: Program -> Err (Structs, Program)
+typecheck :: Program -> Err (Structs, [FnDef])
 typecheck program = evalStateT (runType $ typeCheckProgram program) emptyEnv
   where
-    typeCheckProgram :: Program -> TypeCheck (Structs, Program)
+    typeCheckProgram :: Program -> TypeCheck (Structs, [FnDef])
     typeCheckProgram (Prog defs) = do
-      let (structDefs,pointerDef , funDefs) = splitDefinitions program
+      let (structDefs, pointerDef , classDef ,funDefs) = splitDefinitions defs
       typeCheckStructs pointerDef structDefs
       initializeEnv funDefs
       typedDefs <- mapM typeCheckFun funDefs
       structs   <- CMS.gets structs
-      return (structs, Prog typedDefs)
+      return (structs, typedDefs)
 
-    splitDefinitions (Prog defs) = (\(a,b,c) -> (reverse a,reverse b, reverse c))
-                                   $ foldl select ([], [], []) defs
-    select (stDefs, pDefs, funDefs) def@(FnDef _ _ _ _) = (stDefs, pDefs, def:funDefs)
-    select (stDefs, pDefs, funDefs) def@(StructDef _ _) = (def:stDefs, pDefs, funDefs)
-    select (stDefs, pDefs, funDefs) def@(PtrDef _ _)    = (stDefs, def:pDefs, funDefs)
 
 -- | Checks all typedef and struct definitions and if everything is
 --   correct then it put them in the environment.
-typeCheckStructs :: [TopDef] -> [TopDef] -> TypeCheck ()
+typeCheckStructs :: [TypeDecl] -> [TypeDecl] -> TypeCheck ()
 typeCheckStructs pointerDefs structDefs = do
   pointers <- foldM
               (\m (PtrDef (Ref strName) ptr@(Ident synom)) ->
@@ -214,8 +222,8 @@ typeCheckStructs pointerDefs structDefs = do
                           , pointers = pointers})
 
 -- | Typechecks a function definition.
-typeCheckFun :: TopDef -> TypeCheck TopDef
-typeCheckFun (FnDef ret_t id args (SBlock stmts)) = do
+typeCheckFun :: FnDef -> TypeCheck FnDef
+typeCheckFun (FunDef ret_t id args (SBlock stmts)) = do
   newBlock
   mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) args
   ret_t'      <- converseType ret_t
@@ -225,7 +233,7 @@ typeCheckFun (FnDef ret_t id args (SBlock stmts)) = do
   (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t' (BStmt (SBlock stmts))
   unless (has_ret || typeEq ret_t Void) $ fail $ "Missing return statement in function " ++ show id
   removeBlock
-  return $ FnDef ret_t' id checkedArgs typedStmts
+  return $ FunDef ret_t' id checkedArgs typedStmts
 
 
 -- Casts a dimension addressing to an expression.
