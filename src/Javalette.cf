@@ -116,7 +116,7 @@ PtrDeRef.  Expr6 ::= Ident "->" Ident;
 -- Shift-reduce
 ENull.     Expr6 ::= "(" Ident ")" "null";
 
-internal   NullC. Expr ::= "null";
+internal NullC. Expr ::= "null";
 
 ELitInt.   Expr6 ::= Integer ;
 
