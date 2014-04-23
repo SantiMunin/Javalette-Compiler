@@ -20,7 +20,7 @@ HExtend.    Hierarchy ::= "extends" Ident;
 HEmpty.     Hierarchy ::= ;
 
 separator nonempty TopDef "" ;
-separator FnDef ";";
+separator nonempty FnDef "";
 
 Argument.  Arg ::= Type Ident;
 
@@ -28,7 +28,7 @@ separator  Arg "," ;
 
 StrField.  SField ::= Type Ident;
 
-separator  SField ";";
+terminator  SField ";";
 
 -- statements ----------------------------------------------
 
@@ -52,9 +52,11 @@ Ass.       Stmt ::= LVal "=" Expr  ";" ;
 LValVar.   LVal ::= Ident [DimA]; 
 LValStr.   LVal ::= Ident "->" Ident;
 
-Incr.      Stmt ::= Ident "++"  ";" ;
+internal  LValTyped. LVal ::= "[" LVal ":" Type "]";
 
-Decr.      Stmt ::= Ident "--"  ";" ;
+Incr.      Stmt ::= LVal "++"  ";" ;
+
+Decr.      Stmt ::= LVal "--"  ";" ;
 
 Ret.       Stmt ::= "return" Expr ";" ;
 
@@ -99,10 +101,7 @@ internal   String. Type ::= "String" ;
 
 Var.        Expr6 ::= Ident [DimA] ;
 
-Method.     Expr6 ::= Ident [DimA] "." Ident MTail;
-
-MTailEmpty. MTail ::= ;
-MTailExprs. MTail ::= "(" [Expr] ")";
+Method.     Expr6 ::= Expr6 "." Expr6;
 
 DimAddr.   DimA  ::= "[" Expr "]" ;
 

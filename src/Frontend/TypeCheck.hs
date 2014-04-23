@@ -1,7 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 -- | Implements a type checker for the Javalette language.
-module Frontend.TypeCheck where
+module Frontend.TypeCheck (typecheck) where
 
 import           Javalette.Abs
 import           Javalette.ErrM
@@ -13,25 +13,25 @@ import qualified Data.Set            as S
 
 import           Control.Monad       (forM, unless, zipWithM_)
 import           Control.Monad.State as CMS
+import           Control.Monad.Reader as CMR
 
 
 -- | An environment is a pair containing information about functions
 -- and variables defined. It supports different scopes.
-data Env = Env { functions :: FunHeader
-               , structs   :: Structs
-               , pointers  :: Pointers
-               , context   :: [Context]
-               }
--- | Relation between pointers an the pointed structure.
-type Pointers = Map Ident Ident
-
+data ReadEnv  = REnv { functions :: FunHeader
+                     , structs   :: Structs
+                     }
+              
+data StateEnv = SEnv { context   :: [Context]
+                     }
+               
 -- | A context is a relation identifier -> (type, number of dimensions)
 -- (variables).
 type Context = Map Ident Type
 
 -- | This monad holds a state and allows to stop the execution
 -- returning an error.
-type TypeCheck a = StateT Env Err a
+type TypeCheck a = ReaderT ReadEnv (StateT StateEnv Err) a
 
 type FunHeader   = Map Ident ([Type], Type)
 
@@ -45,14 +45,6 @@ lookupVar id = do
       look (top:rest) = case M.lookup id top of
                            Nothing -> look rest
                            Just t  -> return t
-
--- | Looks for a function in the environment.
-lookupFun :: Ident -> TypeCheck ([Type],Type)
-lookupFun id = do
-  functions <- CMS.gets functions
-  case M.lookup id functions of
-    Nothing -> fail $ "Function " ++ show id ++ " not declared."
-    Just t  -> return t
 
 -- | Adds a variable type to the context if it does not exists.
 createVarIfNotExists :: Ident -> Type -> TypeCheck ()
@@ -70,9 +62,6 @@ deleteVar id = do
   top:rest <- CMS.gets context
   CMS.modify (\env -> env { context =  M.delete id top: rest })
 
--- | Updates the function signature in the environment
--- unless it was previously defined (in that case throws an error).
-
 -- | Creates a new context for variables.
 newBlock :: TypeCheck ()
 newBlock = CMS.modify (\env -> env {context =  M.empty : context env})
@@ -80,6 +69,14 @@ newBlock = CMS.modify (\env -> env {context =  M.empty : context env})
 -- | Removes a context of variables.
 removeBlock :: TypeCheck ()
 removeBlock  = CMS.modify (\env -> env { context = tail $ context env})
+
+-- | Looks for a function in the environment.
+lookupFun :: Ident -> TypeCheck ([Type],Type)
+lookupFun id = do
+  functions <- CMR.asks functions
+  case M.lookup id functions of
+    Nothing -> fail $ "Function " ++ show id ++ " not declared."
+    Just t  -> return t
 
 -- | Checks all function definitions at the top level.
 checkFuns ::[FnDef] -> Err FunHeader
@@ -109,18 +106,16 @@ checkFuns functions =
 -- | Typechecks a program.
 typecheck :: (Structs, [FnDef]) -> Err (Structs, [FnDef])
 typecheck (structDefs, fnDefs) = do
-  --checkStructs structDefs
   initFuns  <- checkFuns fnDefs
-  let initialEnv = Env { functions   = initFuns
-                       , structs     = structDefs
-                       , pointers    = M.empty
-                       , context     = []
-                       }
-  typedFnDefs <- evalStateT (mapM typeCheckFun fnDefs) initialEnv
+  let initialREnv = REnv { functions   = initFuns
+                         , structs     = structDefs }
+
+      initialSEnv = SEnv { context = [] }
+  typedFnDefs <- evalStateT
+                 (runReaderT (mapM typeCheckFun fnDefs) initialREnv)
+                 initialSEnv
   return (structDefs, typedFnDefs)
 
-checkStructs = undefined
-               
 -- | Typechecks a function definition.
 typeCheckFun :: FnDef -> TypeCheck FnDef
 typeCheckFun (FunDef ret_t id args (SBlock stmts)) = do
@@ -147,68 +142,76 @@ dimsToExprs = map dimToExpr
 exprsToDims :: [Expr] -> [DimA]
 exprsToDims = map DimAddr
 
+typeCheckLVal :: LVal -> TypeCheck LVal
+typeCheckLVal lval =
+  case lval of
+    LValVar ident ndims ->
+      do typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
+         t               <- lookupVar ident
+         let dimT = case t of
+                      DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
+                      t'           -> t'
+         return $ LValTyped (LValVar ident (exprsToDims typedAddrExpr)) dimT
+
+    LValStr name field ->
+      do t <- lookupVar name
+         case t of
+           Pointer strName ->
+             do structs <- CMR.asks structs
+                case M.lookup strName structs of
+                  Nothing -> fail $ "Struct " ++ show strName ++ " not defined."
+                  Just (Struct _ fields) ->
+                    do case lookup field . map (\(StrField t id) -> (id,t))
+                              $ fields of
+                         Nothing ->
+                           fail "Trying to reference a field that doesn't exists"
+                         Just t' -> return $ LValTyped lval t'
+
+           _ -> error $ "Variable " ++ show name ++ " must be a pointer."
+
+
 -- | Typechecks the validity of a given statement.
 typeCheckStmt :: Type -> Stmt -> TypeCheck (Bool, Stmt)
 typeCheckStmt funType stm =
     case stm of
       Empty -> return (False, Empty)
-      BStmt (SBlock stmts) -> do
-               newBlock
-               results <- mapM (typeCheckStmt funType) stmts
-               let (rets, typedStmts) = unzip results
-               removeBlock
-               return (or rets, BStmt (SBlock typedStmts))
-      Decl t items -> do
-               typedExprs <- mapM (checkItem t) items
-               let typedItems = zipWith typeItem items typedExprs
-               mapM_ (uncurry createVarIfNotExists) $
-                     zip (map getIdent items) (repeat t)
-               return (False, Decl t typedItems)
-          where
-             checkItem t (NoInit id)   = return Nothing
-             checkItem t (Init id exp) = do
-                        typedExpr <- checkTypeExpr t exp
-                        return $ Just typedExpr
-             typeItem (NoInit id) Nothing = NoInit id
-             typeItem (Init id _) (Just typedExpr) = Init id typedExpr
-             getIdent (NoInit id)    = id
-             getIdent (Init id _)    = id
+      BStmt (SBlock stmts) ->
+        do newBlock
+           results <- mapM (typeCheckStmt funType) stmts
+           let (rets, typedStmts) = unzip results
+           removeBlock
+           return (or rets, BStmt (SBlock typedStmts))
+      Decl t items -> 
+        do typedExprs <- mapM (checkItem t) items
+           let typedItems = zipWith typeItem items typedExprs
+           mapM_ (uncurry createVarIfNotExists) $
+                 zip (map getIdent items) (repeat t)
+           return (False, Decl t typedItems)
+        where
+          checkItem t (NoInit id)   = return Nothing
+          checkItem t (Init id exp) = do
+               typedExpr <- checkTypeExpr t exp
+               return $ Just typedExpr
+          typeItem (NoInit id) Nothing = NoInit id
+          typeItem (Init id _) (Just typedExpr) = Init id typedExpr
+          getIdent (NoInit id)    = id
+          getIdent (Init id _)    = id
 
       Ass lval exp ->
-        -- Variable posibbly indexed
-        case lval of
-          LValVar ident ndims -> do
-            typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
-            t               <- lookupVar ident
-            let dimT = case t of
-                         DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
-                         t'           -> t'
-            typedExpr       <- checkTypeExpr dimT exp
-            return (False, Ass (LValVar ident (exprsToDims typedAddrExpr)) typedExpr)
+        do typedLVal@(LValTyped _ t') <- typeCheckLVal lval
+           typedExpr       <- checkTypeExpr t' exp
+           return (False, Ass typedLVal typedExpr)
 
-          -- Field of an object in the heap
-          LValStr name field -> do
-            t <- lookupVar name
-            case t of
-              Pointer strName ->
-                do str <- CMS.gets (M.lookup strName . structs)
-                   case str of
-                     Nothing -> fail $ "Struct " ++ show strName ++ " not defined."
-                     Just (Struct _ fields) ->
-                       do case lookup field . map (\(StrField t id) -> (id,t))
-                                 $ fields of
-                            Nothing ->
-                              fail "Trying to reference a field that doesn't exists"
-                            Just t' ->
-                              do typedExpr <- checkTypeExpr t' exp
-                                 return (False, Ass lval typedExpr)
-
-              _ -> error $ "Variable " ++ show name ++ " must be a pointer."
-
-      Incr ident ->
-          lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
-      Decr ident ->
-          lookupVar ident >>= checkTypeNum  >>= (\typedExpr -> return (False, stm))
+      Incr lval ->
+        do typedLVal@(LValTyped _ t') <- typeCheckLVal lval
+           checkTypeNum t'
+           return (False, Incr typedLVal)
+            
+      Decr lval ->
+        do typedLVal@(LValTyped _ t') <- typeCheckLVal lval
+           checkTypeNum t'
+           return (False, Decr typedLVal)
+                   
       Ret exp ->
           checkTypeExpr funType exp >>= (\typedExpr -> return (True, Ret typedExpr))
       VRet    -> if typeEq funType Void then return (True, VRet)
@@ -285,19 +288,22 @@ inferTypeExpr exp =
                       _            -> t
         return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
 
-      Method id eDims (Ident "length") MTailEmpty -> do
+      Method (Var id eDims) (Var (Ident "length") []) -> do
         (DimT t ndims) <- lookupVar id
         when ((fromIntegral . length) eDims > ndims)
                $ fail "Indexing failure: Too many dimensions"
         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
-        return (ETyped (Method id (exprsToDims typedEDims) (Ident "length") MTailEmpty) Int)
-
+        return (ETyped (Method (Var id 
+                        (exprsToDims typedEDims)) (Var (Ident "length") [])) Int)
+                
+      Method _ _ -> fail $ "Bad method invocation: " ++ show exp
+                    
       ENew t eDims     ->
        -- New object in the heap.
        if null eDims then
          case t of
            Ref structName -> do
-                  structs <- CMS.gets structs
+                  structs <- CMR.asks structs
                   case M.lookup structName structs of
                     Nothing  -> fail $ "Type not defined: " ++ show structName
                     Just _   -> return (ETyped exp (Pointer structName))
@@ -311,7 +317,7 @@ inferTypeExpr exp =
 
       PtrDeRef id1 id2  -> do
              Pointer structName <- lookupVar id1
-             Just (Struct name fields) <- CMS.gets (M.lookup structName . structs)
+             Just (Struct name fields) <- CMR.asks (M.lookup structName . structs)
              case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                Nothing -> fail "Trying to reference a field that doesn't exists."
                Just t' -> return $ ETyped exp t'
@@ -361,7 +367,7 @@ inferTypeExpr exp =
         typedExpr@(ETyped _ t) <- inferTypeExpr exp
         checkTypeNum t
         return $ ETyped (Neg typedExpr) t
-
+      
 -- | Checks if a type is suitable to be contained in an array.
 checkValidArrayType :: Type -> TypeCheck ()
 checkValidArrayType Void        = fail "Cannot create an array of voids."

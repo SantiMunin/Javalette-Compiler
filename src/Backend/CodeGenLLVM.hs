@@ -249,6 +249,29 @@ genCodeItem rawtype (Init id expr) = do
     where
       t = toPrimTy rawtype
 
+-- | Generate code for an LVal but only if this is a field referencing or a variable.
+--   Arrays are manipulated in the calleer function.
+genCodeLVal :: LVal -> GenCode Register
+genCodeLVal lval  =
+  case lval of
+    LValVar id exprDims -> 
+      do (addr,ty) <- lookUpVar id
+         return addr
+
+    LValStr var (Ident field) ->
+        do (addr,ptr@(Ptr (Def structName))) <- lookUpVar var
+           Just fields <- CMS.gets (M.lookup structName . structs)
+           let Just indx = fmap fromIntegral . elemIndex field . map fst $ fields
+           str <- freshLocal
+           emit $ NonTerm (ILoad addr ptr) (Just str)
+           debugger  "Calculate the address of the field"
+           fieldAddr <- freshLocal
+           emit $ NonTerm (GetElementPtr ptr (Reg str) [(I32, Const (CI32 0))
+                                                       ,(I32, Const (CI32 indx))])
+                  (Just fieldAddr)
+           return fieldAddr
+    _ -> error $ show lval
+         
 -- | Generates the code of an statement.
 genCodeStmt :: Stmt -> GenCode ()
 genCodeStmt stmt = case stmt of
@@ -260,109 +283,103 @@ genCodeStmt stmt = case stmt of
     removeBlock
   Decl type' items  -> mapM_ (genCodeItem type') items
 
-  Ass lval expr@(ETyped _ innerType)  ->
-    case lval of
-      LValVar id exprDims -> do
-        value     <- genCodeExpr expr
-        (addr,ty) <- lookUpVar id
-        case ty of
-          ArrayT ty' nDim ->
-            if null exprDims then
-              emit $ NonTerm (IStore addr value ty) Nothing
-            else
-              if length exprDims == fromIntegral nDim then do
-                elemAddr <- findArrIndex ty addr exprDims
-                emit $ NonTerm (IStore elemAddr value ty') Nothing
-              else do
-                elemAddr  <- findArrIndex ty addr exprDims
+  Ass (LValTyped lval t) expr@(ETyped _ innerType)  ->
+       case lval of
+         LValVar id exprDims ->
+           do value <- genCodeExpr expr
+              (addr,ty) <- lookUpVar id
+              case ty of
+                ArrayT ty' nDim ->
+                  if null exprDims then
+                    emit $ NonTerm (IStore addr value ty) Nothing
+                  else
+                    if length exprDims == fromIntegral nDim then
+                      do elemAddr <- findArrIndex ty addr exprDims
+                         emit $ NonTerm (IStore elemAddr value ty') Nothing
+                    else
+                      do elemAddr  <- findArrIndex ty addr exprDims
+                                      
+                         debugger "Set up the source array"
+                         sourceStr  <- freshLocal
+                         emit $ NonTerm (IAlloc ty) (Just sourceStr)
+                         emit $ NonTerm (IStore sourceStr value ty) Nothing
+                         
+                         debugger "Get the source array of elements"
+                         arrayAddr <- freshLocal
+                         emit $ NonTerm (GetElementPtr (Ptr ty) (Reg sourceStr)
+                                                         [(I32, Const (CI32 0))
+                                                         ,(I32, Const (CI32 3))])
+                                (Just arrayAddr)
+                           
+                         array <- freshLocal
+                         emit $ NonTerm (ILoad arrayAddr (Ptr ty')) (Just array)
+                         
+                         debugger "Get the source length of the array"
+                         lenAddr <- freshLocal
+                         emit $ NonTerm (GetElementPtr (Ptr ty) (Reg sourceStr)
+                                                         [(I32, Const (CI32 0))
+                                                         ,(I32, Const (CI32 0))])
+                                (Just lenAddr)
+                           
+                         len <- freshLocal
+                         emit $ NonTerm (ILoad lenAddr I32) (Just len)
+                         
+                         debugger "Calculate the size of element"
+                         pointerE       <- freshLocal
+                         sizeE          <- freshLocal
+                         emit $ NonTerm (GetElementPtr (Ptr ty') (Const Null)
+                                                         [(I32, Const (CI32 1))])
+                                (Just pointerE)
+                         emit $ NonTerm (PtrToInt (Ptr ty') pointerE I32) (Just sizeE)
 
-                debugger "Set up the source array"
-                sourceStr  <- freshLocal
-                emit $ NonTerm (IAlloc ty) (Just sourceStr)
-                emit $ NonTerm (IStore sourceStr value ty) Nothing
+                         debugger "Calculate the total number of elements"
+                         sizeTotal     <- freshLocal
+                         emit $ NonTerm (IMul (Reg sizeE) (Reg len) I32) (Just sizeTotal)
+                         
+                         castArray1    <- freshLocal
+                         castArray2    <- freshLocal
+                         debugger "Copying memory"
+                         emit $ NonTerm (BitCast (Ptr ty') array    (Ptr I8))
+                                (Just castArray1)
+                         emit $ NonTerm (BitCast (Ptr ty') elemAddr (Ptr I8))
+                                (Just castArray2)
+                         emit $ NonTerm (ICall (Ptr I8) "memcpy"
+                                                 [(Ptr I8, Reg castArray2)
+                                                 ,(Ptr I8, Reg castArray1)
+                                                 ,(I32,Reg sizeTotal)])
+                                Nothing
+                       
+                _     ->  emit $ NonTerm (IStore addr value ty) Nothing
 
-                debugger "Get the source array of elements"
-                arrayAddr <- freshLocal
-                emit $ NonTerm (GetElementPtr (Ptr ty) (Reg sourceStr)
-                                                [(I32, Const (CI32 0))
-                                                ,(I32, Const (CI32 3))])
-                               (Just arrayAddr)
+         LValStr _ _ ->
+           do value <- genCodeExpr expr
+              addr  <- genCodeLVal lval
+              emit $ NonTerm (IStore addr value (toPrimTy t)) Nothing
+                      
+  Incr (LValTyped lval t) ->
+    do addr      <- genCodeLVal lval      
+       rt   <- freshLocal
+       rt2  <- freshLocal
+       let ty = toPrimTy t
+           cnst = Const $ case ty of
+                            D   -> CD   1
+                            I32 -> CI32 1
+       emit $ NonTerm (ILoad addr ty)            (Just rt)
+       emit $ NonTerm (IAdd (Reg rt) cnst ty)    (Just rt2)
+       emit $ NonTerm (IStore addr (Reg rt2) ty) Nothing
 
-                array <- freshLocal
-                emit $ NonTerm (ILoad arrayAddr (Ptr ty')) (Just array)
+  Decr (LValTyped lval t) ->
+    do addr      <- genCodeLVal lval      
+       rt   <- freshLocal
+       rt2  <- freshLocal
+       let ty = toPrimTy t
+           cnst = Const $ case ty of
+                            D   -> CD   (-1)
+                            I32 -> CI32 (-1)
+       emit $ NonTerm (ILoad addr ty)            (Just rt)
+       emit $ NonTerm (IAdd (Reg rt) cnst ty)    (Just rt2)
+       emit $ NonTerm (IStore addr (Reg rt2) ty) Nothing
 
-                debugger "Get the source length of the array"
-                lenAddr <- freshLocal
-                emit $ NonTerm (GetElementPtr (Ptr ty) (Reg sourceStr)
-                                                [(I32, Const (CI32 0))
-                                                ,(I32, Const (CI32 0))])
-                       (Just lenAddr)
-
-                len <- freshLocal
-                emit $ NonTerm (ILoad lenAddr I32) (Just len)
-
-                debugger "Calculate the size of element"
-                pointerE       <- freshLocal
-                sizeE          <- freshLocal
-                emit $ NonTerm (GetElementPtr (Ptr ty') (Const Null)
-                                                [(I32, Const (CI32 1))])
-                       (Just pointerE)
-                emit $ NonTerm (PtrToInt (Ptr ty') pointerE I32) (Just sizeE)
-
-                debugger "Calculate the total number of elements"
-                sizeTotal     <- freshLocal
-                emit $ NonTerm (IMul (Reg sizeE) (Reg len) I32) (Just sizeTotal)
-
-                castArray1    <- freshLocal
-                castArray2    <- freshLocal
-                debugger "Copying memory"
-                emit $ NonTerm (BitCast (Ptr ty') array    (Ptr I8))
-                       (Just castArray1)
-                emit $ NonTerm (BitCast (Ptr ty') elemAddr (Ptr I8))
-                       (Just castArray2)
-                emit $ NonTerm (ICall (Ptr I8) "memcpy" [(Ptr I8, Reg castArray2)
-                                                        ,(Ptr I8, Reg castArray1)
-                                                        ,(I32,Reg sizeTotal)])
-                             Nothing
-
-          _              -> emit $ NonTerm (IStore addr value ty) Nothing
-      LValStr var (Ident field) ->
-        do (addr,ptr@(Ptr (Def structName))) <- lookUpVar var
-           Just fields <- CMS.gets (M.lookup structName . structs)
-           let Just indx = fmap fromIntegral . elemIndex field . map fst $ fields
-
-           value <- genCodeExpr expr
-
-           str <- freshLocal
-           emit $ NonTerm (ILoad addr ptr) (Just str)
-           debugger  "Calculate the address of the field"
-           fieldAddr <- freshLocal
-           emit $ NonTerm (GetElementPtr ptr (Reg str) [(I32, Const (CI32 0))
-                                                       ,(I32, Const (CI32 indx))])
-                  (Just fieldAddr)
-           emit $ NonTerm (IStore fieldAddr value (toPrimTy innerType)) Nothing
-
-  Incr id       -> do
-    (addr,ty) <- lookUpVar id
-    rt   <- freshLocal
-    rt2  <- freshLocal
-    let  cnst = Const $ case ty of
-                          D   -> CD 1
-                          I32 -> CI32 1
-    emit $ NonTerm (ILoad addr ty)            (Just rt)
-    emit $ NonTerm (IAdd (Reg rt) cnst ty)    (Just rt2)
-    emit $ NonTerm (IStore addr (Reg rt2) ty) Nothing
-
-  Decr id       -> do
-    (addr,ty) <- lookUpVar id
-    rt   <- freshLocal
-    rt2  <- freshLocal
-    let  cnst = Const $ case ty of
-                          D   -> CD   (-1)
-                          I32 -> CI32 (-1)
-    emit $ NonTerm (ILoad addr ty)            (Just rt)
-    emit $ NonTerm (IAdd (Reg rt) cnst ty)    (Just rt2)
-    emit $ NonTerm (IStore addr (Reg rt2) ty) Nothing
 
   Ret expr@(ETyped _ t)      -> do
     e <- genCodeExpr expr
@@ -490,7 +507,7 @@ genCodeExpr (ETyped expr t) = case expr of
             return (Reg elem)
 
   -- TODO other methods
-  Method id exprDims (Ident "length") MTailEmpty -> do
+  Method (Var id exprDims) (Var (Ident "length") []) -> do
     (addr, ty) <- lookUpVar id
     let indexedDims = fromIntegral $ length exprDims
 
@@ -630,7 +647,7 @@ genCodeExpr (ETyped expr t) = case expr of
     return (Reg fieldElem)
 
 
-  NullC -> return (Const Null)
+  NullC  -> return (Const Null)
 
   ELitInt n        -> return $ Const (CI32 n)
   ELitDoub d       -> return $ Const (CD d)

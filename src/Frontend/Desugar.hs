@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Frontend.Desugar where
+module Frontend.Desugar (desugar) where
 
 import           Javalette.Abs
 import           Javalette.ErrM
@@ -12,20 +12,42 @@ import           Control.Monad.Reader as CMR
 import           Data.Map            (Map)
 import qualified Data.Map            as M
 
-data ReadEnv   = REnv { pointers :: Pointers }
+import qualified Data.List as L
+  
+data ReadEnv   = REnv { pointers :: Pointers
+                      , methods  :: Map Ident Ident }
 
-data StateEnv  = SEnv { sugarVar :: Int }
+data StateEnv  = SEnv { sugarVar  :: Int
+                      , classAttr :: [Ident] }
+
                
+type Desugar a = ReaderT ReadEnv (StateT StateEnv Err) a
+
+type Pointers = Map Ident Ident
+
+newClassAttr :: [Ident] -> Desugar ()
+newClassAttr attr = CMS.modify (\env -> env { classAttr = attr })
+
+emptyClassAttr :: Desugar ()
+emptyClassAttr = CMS.modify (\env -> env { classAttr = [] })
+
+deleteClassAttr :: Ident -> Desugar ()
+deleteClassAttr id =
+  CMS.modify (\env -> env { classAttr = L.delete id $ classAttr env })
+
+isClassAttr :: Ident -> Desugar Bool
+isClassAttr id = CMS.gets ((elem id) . classAttr)
+
+lookForMethodClass :: Ident -> Desugar (Maybe Ident)
+lookForMethodClass id = CMR.asks (M.lookup id . methods)
+                        
+-- | Take a new unique variable to use in desugar.
 newSugarVar :: Desugar Ident
 newSugarVar = do
   var <- CMS.gets sugarVar
   CMS.modify (\env -> env { sugarVar = sugarVar env + 1})
   return . Ident $ "_" ++ show var
-         
-type Desugar a = ReaderT ReadEnv (StateT StateEnv Err) a
-
-type Pointers = Map Ident Ident
-  
+           
 -- | Split top level defintions in structs, pointers, classes and functions.
 splitDefinitions :: [TopDef] -> ([TypeDecl],[TypeDecl],[TypeDecl],[FnDef])
 splitDefinitions defs =
@@ -39,22 +61,50 @@ splitDefinitions defs =
         TopTypeDecl def@(PtrDef _ _)       -> (s, def:p, c, f)
         TopTypeDecl def@(ClassDef _ _ _ _) -> (s, p, def:c, f)
 
+desugarMethod :: Ident -> FnDef -> FnDef
+desugarMethod name@(Ident class') (FunDef type' (Ident id) args block) =
+  (FunDef type'
+          (Ident $ class' ++ "." ++ id)
+          (Argument (Ref name) (Ident "self") : args)
+          block)
+
 -- | Desugar a program without typechecking.
 desugar:: Program -> Err (Structs, [FnDef])
 desugar (Prog defs) = do
   let (s, p, c, f)   = splitDefinitions defs
-  (structs,pointers) <- checkStructs p s
-  let initialREnv     = REnv pointers
-      initialSEnv     = SEnv 0
-  desugaredFuns      <- evalStateT
-                        (runReaderT (mapM desugarFnDef f) initialREnv)
+  (structs,pointers,classes) <- checkStructs p s c
+  let initialREnv     = REnv pointers (M.fromList classMethods)
+      initialSEnv     = SEnv 0 [] 
+      functions       = zip (repeat []) f
+
+      methodsTopLevel = concatMap
+                        (\(class', attr, methods) ->
+                           zip (repeat (map (\(StrField _ id) -> id) attr))
+                               (map (desugarMethod class') methods)
+                        ) classes
+
+      classMethods    = concatMap
+                         (\(class', _,methods) ->
+                            zip (map (\(FunDef _ id _ _) -> id) methods)
+                                (repeat class')
+                        ) classes
+
+  desugaredTopLevel  <- evalStateT
+                        (runReaderT (mapM (uncurry desugarFnDef)
+                                          (functions ++ methodsTopLevel))
+                         initialREnv)
                         initialSEnv
-  return (structs, desugaredFuns)
+
+  return (structs, desugaredTopLevel)
 
 -- | Check top level struct declaration against pointer declaration,
 --   checking for name clashes.
-checkStructs :: [TypeDecl] -> [TypeDecl] -> Err (Structs, Pointers)
-checkStructs pointerDefs structDefs = do
+checkStructs :: [TypeDecl] -- ^ Pointer definitions
+             -> [TypeDecl] -- ^ Struct  definitions
+             -> [TypeDecl] -- ^ Classes definitions
+             -> Err (Structs, Pointers, [(Ident,[SField],[FnDef])])
+
+checkStructs pointerDefs structDefs classDefs = do
   pointers <- foldM
               (\m (PtrDef (Ref strName) ptr@(Ident synom)) ->
                  if synom `elem` ["int", "double", "bool", "void"] then
@@ -98,18 +148,56 @@ checkStructs pointerDefs structDefs = do
                     return $ M.insert name (Struct name checkedFields) m
              ) M.empty structDefs
 
-  return (structs, pointers)
+  (newStrs,newPtrs,classes) <-
+    foldM
+    (\(strs,ptrs,mthds) (ClassDef name@(Ident class') hierarchy fields classMethods) ->
+       case M.lookup name strs of
+         Just _  -> fail $ concat ["Class name "
+                                  , show name
+                                  , "already defined."]
+         Nothing -> 
+           case M.lookup name strs of
+             Just _  -> fail $ concat ["Class name "
+                                      , show name
+                                      , "already defined."]
+             Nothing -> do
+               let newPtrs = M.insert name name ptrs
+               checkedFields <- 
+                 foldM
+                 (\f (StrField t id) ->
+                    case t of
+                      Ref name ->
+                        case M.lookup name newPtrs of
+                          Nothing ->
+                            fail $ concat [ "Field "
+                                          , show id
+                                          , " is not valid."]
+                          Just strName ->
+                            return $ f ++ [StrField (Pointer strName) id]
+                      _ ->  return  $ f ++ [StrField t id]
+                 ) [] fields
+               return ( M.insert name (Struct name checkedFields) strs
+                      , newPtrs
+                      , ( name
+                        , checkedFields
+                        , classMethods) : mthds)
+    ) (structs, pointers, []) classDefs
+                          
+  return (newStrs, newPtrs, classes)
 
-desugarFnDef :: FnDef -> Desugar FnDef
-desugarFnDef (FunDef type' id args block) = do
+desugarFnDef :: [Ident] -> FnDef -> Desugar FnDef
+desugarFnDef classAttr (FunDef type' id args block) = do
+  newClassAttr classAttr
   desugaredType  <- desugarType type'
   desugaredArgs  <- mapM desugarArg args
   desugaredBlock <- desugarBlock block
+  emptyClassAttr
   return (FunDef desugaredType id desugaredArgs desugaredBlock)
 
 desugarArg :: Arg -> Desugar Arg
 desugarArg (Argument type' id) = do
   desugaredType <- desugarType type'
+  deleteClassAttr id
   return (Argument desugaredType id)
 
 desugarBlock :: Block -> Desugar Block
@@ -130,7 +218,7 @@ desugarStmt stmt = case stmt of
        return $ (BStmt
                  (SBlock
                   [ Decl Int [Init index  (ELitInt 0)]
-                  , Decl Int [Init len (Method v eDims (Ident "length") MTailEmpty) ]
+                  , Decl Int [Init len (Method exp (Var (Ident "length") [])) ]
                   , Decl desugaredType [NoInit id]
                   , While (ERel
                            (Var index [])
@@ -141,24 +229,42 @@ desugarStmt stmt = case stmt of
                               [Ass (LValVar id [])
                                      (Var v (eDims
                                              ++ [DimAddr (Var index [])]))
-                              , Incr index
+                              , Incr (LValVar index [])
                               , desugaredStmt
                               ]))
                   ]))
   For (ForDecl t id) _ innerStm -> fail "The expression should be a variable."
-  Ass lval expr   -> liftM (Ass lval) (desugarExpr expr)
+  Ass lval expr   -> liftM2 Ass (desugarLVal lval) (desugarExpr expr)
   Ret expr        -> liftM Ret $ desugarExpr expr
   Cond expr stmt  -> liftM2 Cond (desugarExpr expr) (desugarStmt stmt)
   CondElse expr stmt1 stmt2  ->
     liftM3 CondElse (desugarExpr expr) (desugarStmt stmt1) (desugarStmt stmt2)
   While expr stmt -> liftM2 While (desugarExpr expr) (desugarStmt stmt)
   SExp expr       -> liftM SExp $ desugarExpr expr
+  Incr lval       -> liftM Incr $ desugarLVal lval
+  Decr lval       -> liftM Decr $ desugarLVal lval
   _               -> return stmt
+
+desugarLVal :: LVal -> Desugar LVal
+desugarLVal lval = case lval of
+  LValVar id dimas  -> do
+    isAttr <- isClassAttr id
+    if isAttr then
+      return (LValStr (Ident "self") id)
+    else
+      liftM (LValVar id) (mapM desugarDimA dimas) 
+  LValStr id1 id2   -> return (LValStr id1 id2)
+
 
 desugarItem :: Item -> Desugar Item
 desugarItem item = case item of
-  Init id expr -> liftM (Init id) $ desugarExpr expr
-  _ -> return item
+  Init id expr -> do
+    desugaredExpr <- desugarExpr expr
+    deleteClassAttr id
+    return (Init id desugaredExpr)
+  NoInit id -> do
+    deleteClassAttr id
+    return (NoInit id)
 
 desugarType :: Type -> Desugar Type
 desugarType ty =
@@ -171,17 +277,48 @@ desugarType ty =
              Just strName  -> return (Pointer strName)
     _            -> return ty
 
+desugarDimA :: DimA -> Desugar DimA
+desugarDimA (DimAddr expr) = liftM DimAddr $ desugarExpr expr
+
 desugarExpr :: Expr -> Desugar Expr
 desugarExpr expr =
   case expr of
+    Var id dimas -> do
+      isAttr <- isClassAttr id
+      if isAttr then
+        return (PtrDeRef (Ident "self") id)
+      else
+        liftM (Var id) (mapM desugarDimA dimas) 
     ENull id -> do
       pointers <- CMR.asks pointers
       case M.lookup id pointers of
         Nothing          -> fail $ "Type not defined: " ++ show id
         Just structName  -> return (ENull structName)
-    EApp id exprs  -> liftM (EApp id) $ mapM desugarExpr exprs
+    EApp id@(Ident name) exprs  -> 
+      liftM (EApp id) $ mapM desugarExpr exprs
+
     ERel expr1 relop expr2  -> do
       desugaredExpr1 <- desugarExpr expr1
       desugaredExpr2 <- desugarExpr expr2
       return (ERel desugaredExpr1 relop desugaredExpr2)
+    Method expr1 (EApp id@(Ident name) exprs) -> do
+      classMethod <- lookForMethodClass id
+      case classMethod of
+        Nothing     -> fail $ "Method not defined: " ++ show id 
+        Just (Ident class') -> do
+          object <- desugarExpr expr1
+          args   <- mapM desugarExpr exprs
+          return $ EApp (Ident $ class' ++ "." ++ name) (object : args)
+    Neg expr  -> liftM Neg $ desugarExpr expr
+    Not expr  -> liftM Not $ desugarExpr expr
+    EMul expr1 mulop expr2  -> do
+      desugaredExpr1 <- desugarExpr expr1
+      desugaredExpr2 <- desugarExpr expr2
+      return (EMul desugaredExpr1 mulop desugaredExpr2)
+    EAdd expr1 addop expr2  -> do
+      desugaredExpr1 <- desugarExpr expr1
+      desugaredExpr2 <- desugarExpr expr2
+      return (EAdd desugaredExpr1 addop desugaredExpr2)
+    EAnd expr1 expr2  -> liftM2 EAnd (desugarExpr expr1) (desugarExpr expr2)
+    EOr  expr1 expr2  -> liftM2 EOr  (desugarExpr expr1) (desugarExpr expr2)
     _ -> return expr
