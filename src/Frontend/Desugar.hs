@@ -181,7 +181,7 @@ checkStructs pointerDefs structDefs classDefs = do
                            do let Just supertypes = M.lookup strName newObjectH
                               return $ f ++ [StrField (Pointer strName supertypes ) id]
                      _ ->  return  $ f ++ [StrField t id]
-                ) [] (L.union fields parentAttr)
+                ) [] (L.union parentAttr fields)
 
               return ( M.insert name (Struct name checkedFields) strs
                      , newPtrs
