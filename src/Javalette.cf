@@ -89,8 +89,8 @@ Array.     Type ::= Type [Dim];
 
 Ref.       Type ::= Ident;
 
-internal Pointer.   Type ::= Ident "*";
-
+internal Pointer.   Type ::= Ident "[|" [Ident] "|]";
+separator Ident ":";
 separator nonempty Dim "";
 
 internal Struct. Type  ::= Ident [SField];
@@ -126,6 +126,7 @@ ELitTrue.  Expr6 ::= "true" ;
 ELitFalse. Expr6 ::= "false" ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")";
+internal   MApp. Expr ::= "." Ident "(" Expr "," [Expr] ")";
 
 EString.   Expr6 ::= String ;
 

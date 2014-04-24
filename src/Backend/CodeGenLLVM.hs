@@ -178,7 +178,7 @@ toPrimTy t = case t of
                Bool       -> I1
                DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
-               Pointer (Ident id) -> Ptr (Def id)
+               Pointer (Ident id) _ -> Ptr (Def id)
 
 -- | Creates a new label.
 freshLabel :: GenCode Label
@@ -237,17 +237,29 @@ genCodeItem rawtype (NoInit id)    = do
     Doub      -> emit $ NonTerm (IStore addr (Const (CD 0))     t) Nothing
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
     DimT _ _  -> emit $ NonTerm (IStore addr (Const Undef)      t) Nothing
-    Pointer _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
+    Pointer _ _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
     where
       t = toPrimTy rawtype
 
-genCodeItem rawtype (Init id expr) = do
+genCodeItem rawtype (Init id expr@(ETyped innerExpr innerType)) = do
   val         <- genCodeExpr expr
   addr        <- freshVar id rawtype
-  emit $ NonTerm (IAlloc t) (Just addr)
-  emit $ NonTerm (IStore addr val t) Nothing
+  emit $ NonTerm (IAlloc ty) (Just addr)
+  case ty of
+    Ptr (Def name) ->
+      do if innerExpr == NullC then
+           emit $ NonTerm (IStore addr val ty) Nothing
+         else
+           do let Reg valPtr        = val
+              castedPtr <- freshLocal
+              emit $ NonTerm (BitCast (toPrimTy innerType) valPtr ty)
+                     (Just castedPtr)
+              emit $ NonTerm (IStore addr (Reg castedPtr) ty) Nothing
+
+    _ ->  emit $ NonTerm (IStore addr val ty) Nothing
+
     where
-      t = toPrimTy rawtype
+      ty = toPrimTy rawtype
 
 -- | Generate code for an LVal but only if this is a field referencing or a variable.
 --   Arrays are manipulated in the calleer function.
@@ -283,7 +295,7 @@ genCodeStmt stmt = case stmt of
     removeBlock
   Decl type' items  -> mapM_ (genCodeItem type') items
 
-  Ass (LValTyped lval t) expr@(ETyped _ innerType)  ->
+  Ass (LValTyped lval t) expr@(ETyped innerExpr innerType)  ->
        case lval of
          LValVar id exprDims ->
            do value <- genCodeExpr expr
@@ -348,6 +360,16 @@ genCodeStmt stmt = case stmt of
                                                  ,(Ptr I8, Reg castArray1)
                                                  ,(I32,Reg sizeTotal)])
                                 Nothing
+                       
+                Ptr (Def var)  ->
+                  if  innerExpr == NullC then
+                    emit $ NonTerm (IStore addr value ty) Nothing
+                  else
+                    do let Reg valPtr        = value
+                       castedPtr <- freshLocal
+                       emit $ NonTerm (BitCast (toPrimTy innerType) valPtr ty)
+                              (Just castedPtr)
+                       emit $ NonTerm (IStore addr (Reg castedPtr) ty) Nothing
                        
                 _     ->  emit $ NonTerm (IStore addr value ty) Nothing
 
@@ -506,7 +528,6 @@ genCodeExpr (ETyped expr t) = case expr of
             emit $ NonTerm (ILoad addr ty) (Just elem)
             return (Reg elem)
 
-  -- TODO other methods
   Method (Var id exprDims) (Var (Ident "length") []) -> do
     (addr, ty) <- lookUpVar id
     let indexedDims = fromIntegral $ length exprDims
@@ -530,7 +551,7 @@ genCodeExpr (ETyped expr t) = case expr of
 
   ENew _ exprDims ->
     if null exprDims then do
-      let (Pointer (Ident name)) = t
+      let (Pointer (Ident name) _) = t
       debugger "Allocate memory for the structure in the heap"
       pointerE       <- freshLocal
       sizeE          <- freshLocal

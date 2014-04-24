@@ -104,8 +104,8 @@ checkFuns functions =
 
                                             
 -- | Typechecks a program.
-typecheck :: (Structs, [FnDef]) -> Err (Structs, [FnDef])
-typecheck (structDefs, fnDefs) = do
+typecheck :: (Structs, [FnDef], ObjectH) -> Err (Structs, [FnDef])
+typecheck (structDefs, fnDefs, objectH) = do
   initFuns  <- checkFuns fnDefs
   let initialREnv = REnv { functions   = initFuns
                          , structs     = structDefs }
@@ -122,7 +122,7 @@ typeCheckFun (FunDef ret_t id args (SBlock stmts)) = do
   newBlock
   mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) args
   (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t (BStmt (SBlock stmts))
-  unless (has_ret || typeEq ret_t Void)
+  unless (has_ret || (=~=) ret_t Void)
            $ fail $ "Missing return statement in function " ++ show id
   removeBlock
   return $ FunDef ret_t id args typedStmts
@@ -156,7 +156,7 @@ typeCheckLVal lval =
     LValStr name field ->
       do t <- lookupVar name
          case t of
-           Pointer strName ->
+           Pointer strName _ ->
              do structs <- CMR.asks structs
                 case M.lookup strName structs of
                   Nothing -> fail $ "Struct " ++ show strName ++ " not defined."
@@ -214,7 +214,7 @@ typeCheckStmt funType stm =
                    
       Ret exp ->
           checkTypeExpr funType exp >>= (\typedExpr -> return (True, Ret typedExpr))
-      VRet    -> if typeEq funType Void then return (True, VRet)
+      VRet    -> if (=~=) funType Void then return (True, VRet)
                  else fail "Not valid return type"
       Cond exp stm1 -> do
                typedExpr <- checkTypeExpr Bool exp
@@ -252,17 +252,20 @@ typeCheckStmt funType stm =
 
 
 -- | Calculate type equality with dimensional check.
-typeEq :: Type -> Type -> Bool
-typeEq (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
-typeEq (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
-typeEq t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
-typeEq t1             t2             =  t1 == t2
-
+(=~=) :: Type -> Type -> Bool
+(=~=) (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
+(=~=) (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
+(=~=) t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
+(=~=) (Pointer name1 st) (Pointer name2 st2)
+      | name1 == name2   = True
+      | name2 `elem` st = True
+                           
+(=~=) t1 t2 = t1 == t2
 -- | Checks the type of an expresion in the given environment.
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
 checkTypeExpr t exp = do
   typedExpr@(ETyped _ expt') <- inferTypeExpr exp
-  when (not $ typeEq t expt') $
+  when (not $ expt' =~= t) $
        fail $ concat ["Expresion "
                      , show exp
                      , " has not type "
@@ -302,11 +305,8 @@ inferTypeExpr exp =
        -- New object in the heap.
        if null eDims then
          case t of
-           Ref structName -> do
-                  structs <- CMR.asks structs
-                  case M.lookup structName structs of
-                    Nothing  -> fail $ "Type not defined: " ++ show structName
-                    Just _   -> return (ETyped exp (Pointer structName))
+           Pointer structName supertypes -> 
+             return (ETyped exp (Pointer structName supertypes))
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        -- New array of type t
        else do
@@ -316,20 +316,27 @@ inferTypeExpr exp =
          return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
 
       PtrDeRef id1 id2  -> do
-             Pointer structName <- lookupVar id1
+             Pointer structName supertypes <- lookupVar id1
              Just (Struct name fields) <- CMR.asks (M.lookup structName . structs)
              case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                Nothing -> fail "Trying to reference a field that doesn't exists."
                Just t' -> return $ ETyped exp t'
 
-      ENull id  -> return (ETyped NullC (Pointer id))
+      ENull id  -> return (ETyped NullC (Pointer id []))
 
       EString s        -> return $ ETyped exp String
 
-      EApp id args     -> do
-        (args_type, ret_type) <- lookupFun id
-        typedArgs <- checkArgs id args_type args
-        return $ ETyped (EApp id typedArgs) ret_type
+      EApp id args     ->
+        do (args_type, ret_type) <- lookupFun id
+           typedArgs <- checkArgs id args_type args
+           return $ ETyped (EApp id typedArgs) ret_type
+
+      MApp (Ident id) obj args ->
+        do (ETyped _ (Pointer (Ident strName) _)) <- inferTypeExpr obj
+           let methodClass = Ident $ strName ++ "." ++ id
+           (args_type, ret_type) <- lookupFun methodClass
+           typedArgs <- checkArgs methodClass args_type (obj : args)
+           return $ ETyped (EApp methodClass typedArgs) ret_type
 
       EMul exp1 op exp2  -> do
         typedE1@(ETyped _ t1)  <- inferTypeExpr exp1
@@ -403,10 +410,10 @@ inferTypeCMP exp1 exp2 = do
     checkVoid t1
     (ETyped _ t2) <- inferTypeExpr exp2
     checkVoid t2
-    if typeEq t1 t2 then return Bool
+    if t1 =~= t2 then return Bool
     else
       fail $ "Cannot compare type " ++ show t1
                                    ++ " with type " ++ show t2
      where
-        checkVoid t = when (typeEq t Void)$ fail "Void is not comparable."
+        checkVoid t = when (t =~= Void)$ fail "Void is not comparable."
 

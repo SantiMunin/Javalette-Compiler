@@ -14,8 +14,8 @@ import qualified Data.Map            as M
 
 import qualified Data.List as L
   
-data ReadEnv   = REnv { pointers :: Pointers
-                      , methods  :: Map Ident Ident }
+data ReadEnv   = REnv { pointers   :: Pointers
+                      , hierarchy  :: ObjectH }
 
 data StateEnv  = SEnv { sugarVar  :: Int
                       , classAttr :: [Ident] }
@@ -24,6 +24,8 @@ data StateEnv  = SEnv { sugarVar  :: Int
 type Desugar a = ReaderT ReadEnv (StateT StateEnv Err) a
 
 type Pointers = Map Ident Ident
+
+type Classes = Map Ident ([SField],[FnDef])
 
 newClassAttr :: [Ident] -> Desugar ()
 newClassAttr attr = CMS.modify (\env -> env { classAttr = attr })
@@ -38,9 +40,9 @@ deleteClassAttr id =
 isClassAttr :: Ident -> Desugar Bool
 isClassAttr id = CMS.gets ((elem id) . classAttr)
 
-lookForMethodClass :: Ident -> Desugar (Maybe Ident)
-lookForMethodClass id = CMR.asks (M.lookup id . methods)
-                        
+lookSuperTypes :: Ident -> Desugar (Maybe [Ident])
+lookSuperTypes type' = CMR.asks (M.lookup type' . hierarchy)
+                       
 -- | Take a new unique variable to use in desugar.
 newSugarVar :: Desugar Ident
 newSugarVar = do
@@ -69,25 +71,19 @@ desugarMethod name@(Ident class') (FunDef type' (Ident id) args block) =
           block)
 
 -- | Desugar a program without typechecking.
-desugar:: Program -> Err (Structs, [FnDef])
+desugar:: Program -> Err (Structs, [FnDef], ObjectH)
 desugar (Prog defs) = do
   let (s, p, c, f)   = splitDefinitions defs
-  (structs,pointers,classes) <- checkStructs p s c
-  let initialREnv     = REnv pointers (M.fromList classMethods)
+  (structs,pointers,classes,objectH) <- checkStructs p s c
+  let initialREnv     = REnv pointers objectH
       initialSEnv     = SEnv 0 [] 
       functions       = zip (repeat []) f
 
       methodsTopLevel = concatMap
-                        (\(class', attr, methods) ->
+                        (\(class', (attr, methods)) ->
                            zip (repeat (map (\(StrField _ id) -> id) attr))
                                (map (desugarMethod class') methods)
-                        ) classes
-
-      classMethods    = concatMap
-                         (\(class', _,methods) ->
-                            zip (map (\(FunDef _ id _ _) -> id) methods)
-                                (repeat class')
-                        ) classes
+                        ) (M.toList classes)
 
   desugaredTopLevel  <- evalStateT
                         (runReaderT (mapM (uncurry desugarFnDef)
@@ -95,14 +91,14 @@ desugar (Prog defs) = do
                          initialREnv)
                         initialSEnv
 
-  return (structs, desugaredTopLevel)
+  return (structs, desugaredTopLevel, objectH)
 
 -- | Check top level struct declaration against pointer declaration,
 --   checking for name clashes.
 checkStructs :: [TypeDecl] -- ^ Pointer definitions
              -> [TypeDecl] -- ^ Struct  definitions
              -> [TypeDecl] -- ^ Classes definitions
-             -> Err (Structs, Pointers, [(Ident,[SField],[FnDef])])
+             -> Err (Structs, Pointers, Classes, ObjectH)
 
 checkStructs pointerDefs structDefs classDefs = do
   pointers <- foldM
@@ -142,49 +138,64 @@ checkStructs pointerDefs structDefs classDefs = do
                                                , show id
                                                , " is not a valid pointer"]
                                Just strName ->
-                                 return $ f ++ [StrField (Pointer strName) id]
+                                 return $ f ++ [StrField (Pointer strName []) id]
                            _ ->  return  $ f ++ [StrField t id]
                       ) [] fields
                     return $ M.insert name (Struct name checkedFields) m
              ) M.empty structDefs
 
-  (newStrs,newPtrs,classes) <-
+  (newStrs,newPtrs,classes,objectH) <-
     foldM
-    (\(strs,ptrs,mthds) (ClassDef name@(Ident class') hierarchy fields classMethods) ->
+    (\(strs,ptrs,classes,objectH)
+      (ClassDef name@(Ident class') hierarchy fields classMethods) ->
        case M.lookup name strs of
          Just _  -> fail $ concat ["Class name "
                                   , show name
                                   , "already defined."]
-         Nothing -> 
-           case M.lookup name strs of
-             Just _  -> fail $ concat ["Class name "
-                                      , show name
-                                      , "already defined."]
-             Nothing -> do
-               let newPtrs = M.insert name name ptrs
-               checkedFields <- 
-                 foldM
-                 (\f (StrField t id) ->
-                    case t of
-                      Ref name ->
-                        case M.lookup name newPtrs of
-                          Nothing ->
-                            fail $ concat [ "Field "
-                                          , show id
-                                          , " is not valid."]
-                          Just strName ->
-                            return $ f ++ [StrField (Pointer strName) id]
-                      _ ->  return  $ f ++ [StrField t id]
-                 ) [] fields
-               return ( M.insert name (Struct name checkedFields) strs
-                      , newPtrs
-                      , ( name
-                        , checkedFields
-                        , classMethods) : mthds)
-    ) (structs, pointers, []) classDefs
-                          
-  return (newStrs, newPtrs, classes)
+         Nothing ->
+           do (parentAttr, parentMethods, supertypes) <-
+                case hierarchy of
+                  HEmpty -> return ([],[],[])
+                  HExtend parent ->
+                    case M.lookup parent classes of
+                      Nothing -> fail $ concat [ "Class "
+                                               , show name
+                                               , "doesnt make sens"]
+                      Just (a,m) ->
+                        do let Just supertypes = M.lookup parent objectH 
+                           return (a,m,parent : supertypes)
 
+              let newPtrs    = M.insert name name ptrs
+                  newObjectH = M.insert name supertypes objectH
+              checkedFields <- 
+                foldM
+                (\f (StrField t id) ->
+                   case t of
+                     Ref name ->
+                       case M.lookup name newPtrs of
+                         Nothing ->
+                           fail $ concat [ "Attribute "
+                                         , show id
+                                         , " is not valid."]
+                         Just strName ->
+                           do let Just supertypes = M.lookup strName newObjectH
+                              return $ f ++ [StrField (Pointer strName supertypes ) id]
+                     _ ->  return  $ f ++ [StrField t id]
+                ) [] (L.union fields parentAttr)
+
+              return ( M.insert name (Struct name checkedFields) strs
+                     , newPtrs
+                     , M.insert name
+                                  (checkedFields
+                                  ,L.unionBy fnEq classMethods parentMethods) classes
+                     , newObjectH)
+    ) (structs, M.union pointers (M.mapWithKey const structs)
+      , M.empty, M.map (const []) structs) classDefs
+
+  return (newStrs, newPtrs, classes, objectH)
+    where
+      fnEq (FunDef _ id1 _ _) (FunDef _ id2 _ _) = id1 == id2
+                                                   
 desugarFnDef :: [Ident] -> FnDef -> Desugar FnDef
 desugarFnDef classAttr (FunDef type' id args block) = do
   newClassAttr classAttr
@@ -274,7 +285,9 @@ desugarType ty =
            pointers <- CMR.asks pointers
            case M.lookup name pointers of
              Nothing -> fail $ "Struct with name: " ++ show name ++ " not defined."
-             Just strName  -> return (Pointer strName)
+             Just strName  ->
+               do Just supertypes <- lookSuperTypes strName
+                  return (Pointer strName supertypes)
     _            -> return ty
 
 desugarDimA :: DimA -> Desugar DimA
@@ -289,6 +302,7 @@ desugarExpr expr =
         return (PtrDeRef (Ident "self") id)
       else
         liftM (Var id) (mapM desugarDimA dimas) 
+    ENew type' dimas  -> liftM2 ENew (desugarType type') (mapM desugarDimA dimas)
     ENull id -> do
       pointers <- CMR.asks pointers
       case M.lookup id pointers of
@@ -301,14 +315,10 @@ desugarExpr expr =
       desugaredExpr1 <- desugarExpr expr1
       desugaredExpr2 <- desugarExpr expr2
       return (ERel desugaredExpr1 relop desugaredExpr2)
-    Method expr1 (EApp id@(Ident name) exprs) -> do
-      classMethod <- lookForMethodClass id
-      case classMethod of
-        Nothing     -> fail $ "Method not defined: " ++ show id 
-        Just (Ident class') -> do
-          object <- desugarExpr expr1
-          args   <- mapM desugarExpr exprs
-          return $ EApp (Ident $ class' ++ "." ++ name) (object : args)
+    Method expr1 (EApp id exprs) ->
+      do object <- desugarExpr expr1
+         args   <- mapM desugarExpr exprs
+         return $  MApp id object args
     Neg expr  -> liftM Neg $ desugarExpr expr
     Not expr  -> liftM Not $ desugarExpr expr
     EMul expr1 mulop expr2  -> do
