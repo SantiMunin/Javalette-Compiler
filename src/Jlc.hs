@@ -51,8 +51,8 @@ main = do
                     printErr "ERROR"
                     printErr $ "DESUGAR ERROR: " ++ err
                     exitFailure
-                Ok (str,fnDefs,hierarchy) ->
-                  case typecheck (str,fnDefs, hierarchy) of
+                Ok (str,fnDefs) ->
+                  case typecheck (str,fnDefs) of
                     Bad err ->
                       do
                         printErr "ERROR"

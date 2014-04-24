@@ -3,17 +3,17 @@
 -- | Implements a type checker for the Javalette language.
 module Frontend.TypeCheck (typecheck) where
 
+import           Internal.Types
 import           Javalette.Abs
 import           Javalette.ErrM
-import           Internal.Types
-  
-import           Data.Map            (Map)
-import qualified Data.Map            as M
-import qualified Data.Set            as S
 
-import           Control.Monad       (forM, unless, zipWithM_)
-import           Control.Monad.State as CMS
+import           Data.Map             (Map)
+import qualified Data.Map             as M
+import qualified Data.Set             as S
+
+import           Control.Monad        (forM, unless, zipWithM_)
 import           Control.Monad.Reader as CMR
+import           Control.Monad.State  as CMS
 
 
 -- | An environment is a pair containing information about functions
@@ -21,10 +21,10 @@ import           Control.Monad.Reader as CMR
 data ReadEnv  = REnv { functions :: FunHeader
                      , structs   :: Structs
                      }
-              
-data StateEnv = SEnv { context   :: [Context]
+
+data StateEnv = SEnv { context :: [Context]
                      }
-               
+
 -- | A context is a relation identifier -> (type, number of dimensions)
 -- (variables).
 type Context = Map Ident Type
@@ -88,8 +88,8 @@ checkFuns functions =
                 do let argTypes = map (\(Argument t _) -> t) args
                    return $ M.insert id (argTypes, ret_t) m)
           M.empty (initializeDefs ++ functions)
-    where 
-      initializeDefs = 
+    where
+      initializeDefs =
         [ FunDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
         -- void   printInt(int x)
         , FunDef Void (Ident "printDouble") [Argument Doub (Ident "x")] (SBlock [])
@@ -102,10 +102,10 @@ checkFuns functions =
         -- double readDouble()
         ]
 
-                                            
+
 -- | Typechecks a program.
-typecheck :: (Structs, [FnDef], ObjectH) -> Err (Structs, [FnDef])
-typecheck (structDefs, fnDefs, objectH) = do
+typecheck :: (Structs, [FnDef]) -> Err (Structs, [FnDef])
+typecheck (structDefs, fnDefs) = do
   initFuns  <- checkFuns fnDefs
   let initialREnv = REnv { functions   = initFuns
                          , structs     = structDefs }
@@ -181,7 +181,7 @@ typeCheckStmt funType stm =
            let (rets, typedStmts) = unzip results
            removeBlock
            return (or rets, BStmt (SBlock typedStmts))
-      Decl t items -> 
+      Decl t items ->
         do typedExprs <- mapM (checkItem t) items
            let typedItems = zipWith typeItem items typedExprs
            mapM_ (uncurry createVarIfNotExists) $
@@ -206,12 +206,12 @@ typeCheckStmt funType stm =
         do typedLVal@(LValTyped _ t') <- typeCheckLVal lval
            checkTypeNum t'
            return (False, Incr typedLVal)
-            
+
       Decr lval ->
         do typedLVal@(LValTyped _ t') <- typeCheckLVal lval
            checkTypeNum t'
            return (False, Decr typedLVal)
-                   
+
       Ret exp ->
           checkTypeExpr funType exp >>= (\typedExpr -> return (True, Ret typedExpr))
       VRet    -> if (=~=) funType Void then return (True, VRet)
@@ -259,7 +259,7 @@ typeCheckStmt funType stm =
 (=~=) (Pointer name1 st) (Pointer name2 st2)
       | name1 == name2   = True
       | name2 `elem` st = True
-                           
+
 (=~=) t1 t2 = t1 == t2
 -- | Checks the type of an expresion in the given environment.
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
@@ -296,16 +296,16 @@ inferTypeExpr exp =
         when ((fromIntegral . length) eDims > ndims)
                $ fail "Indexing failure: Too many dimensions"
         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
-        return (ETyped (Method (Var id 
+        return (ETyped (Method (Var id
                         (exprsToDims typedEDims)) (Var (Ident "length") [])) Int)
-                
+
       Method _ _ -> fail $ "Bad method invocation: " ++ show exp
-                    
+
       ENew t eDims     ->
        -- New object in the heap.
        if null eDims then
          case t of
-           Pointer structName supertypes -> 
+           Pointer structName supertypes ->
              return (ETyped exp (Pointer structName supertypes))
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        -- New array of type t
@@ -374,7 +374,7 @@ inferTypeExpr exp =
         typedExpr@(ETyped _ t) <- inferTypeExpr exp
         checkTypeNum t
         return $ ETyped (Neg typedExpr) t
-      
+
 -- | Checks if a type is suitable to be contained in an array.
 checkValidArrayType :: Type -> TypeCheck ()
 checkValidArrayType Void        = fail "Cannot create an array of voids."

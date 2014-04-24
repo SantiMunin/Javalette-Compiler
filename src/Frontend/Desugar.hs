@@ -1,4 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Frontend.Desugar (desugar) where
 
 import           Javalette.Abs
@@ -6,26 +5,31 @@ import           Javalette.ErrM
 
 import           Internal.Types
 
-import           Control.Monad.State  as CMS
-import           Control.Monad.Reader as CMR
+import qualified Control.Monad.Reader as CMR (ReaderT, asks, runReaderT)
+import qualified Control.Monad.State  as CMS (StateT, evalStateT, gets, modify)
 
-import           Data.Map            (Map)
-import qualified Data.Map            as M
+import           Control.Monad        (foldM, liftM, liftM2, liftM3)
 
-import qualified Data.List as L
-  
-data ReadEnv   = REnv { pointers   :: Pointers
-                      , hierarchy  :: ObjectH }
+import           Data.Map             (Map)
+import qualified Data.Map             as M (empty, insert, lookup, map,
+                                            mapWithKey, toList, union)
+
+import qualified Data.List            as L (delete, union, unionBy)
+
+data ReadEnv   = REnv { pointers  :: Pointers
+                      , hierarchy :: ObjectH }
 
 data StateEnv  = SEnv { sugarVar  :: Int
                       , classAttr :: [Ident] }
-
                
-type Desugar a = ReaderT ReadEnv (StateT StateEnv Err) a
-
 type Pointers = Map Ident Ident
 
 type Classes = Map Ident ([SField],[FnDef])
+
+type ObjectH = Map Ident [Ident]
+
+type Desugar a = CMR.ReaderT ReadEnv (CMS.StateT StateEnv Err) a
+
 
 newClassAttr :: [Ident] -> Desugar ()
 newClassAttr attr = CMS.modify (\env -> env { classAttr = attr })
@@ -42,14 +46,14 @@ isClassAttr id = CMS.gets ((elem id) . classAttr)
 
 lookSuperTypes :: Ident -> Desugar (Maybe [Ident])
 lookSuperTypes type' = CMR.asks (M.lookup type' . hierarchy)
-                       
+
 -- | Take a new unique variable to use in desugar.
 newSugarVar :: Desugar Ident
 newSugarVar = do
   var <- CMS.gets sugarVar
   CMS.modify (\env -> env { sugarVar = sugarVar env + 1})
   return . Ident $ "_" ++ show var
-           
+
 -- | Split top level defintions in structs, pointers, classes and functions.
 splitDefinitions :: [TopDef] -> ([TypeDecl],[TypeDecl],[TypeDecl],[FnDef])
 splitDefinitions defs =
@@ -63,6 +67,12 @@ splitDefinitions defs =
         TopTypeDecl def@(PtrDef _ _)       -> (s, def:p, c, f)
         TopTypeDecl def@(ClassDef _ _ _ _) -> (s, p, def:c, f)
 
+-- | Desugar a class method.
+--   A method [| type object.method(args) |] is transformed into
+--   a top level function [| type class.method(self : args) |]
+--   Therefore for every class C with method M there will be a new
+--   top level function with name 'C.m' and the object as first
+--   argument.
 desugarMethod :: Ident -> FnDef -> FnDef
 desugarMethod name@(Ident class') (FunDef type' (Ident id) args block) =
   (FunDef type'
@@ -71,30 +81,34 @@ desugarMethod name@(Ident class') (FunDef type' (Ident id) args block) =
           block)
 
 -- | Desugar a program without typechecking.
-desugar:: Program -> Err (Structs, [FnDef], ObjectH)
+desugar:: Program -> Err (Structs, [FnDef])
 desugar (Prog defs) = do
   let (s, p, c, f)   = splitDefinitions defs
   (structs,pointers,classes,objectH) <- checkStructs p s c
   let initialREnv     = REnv pointers objectH
-      initialSEnv     = SEnv 0 [] 
+      initialSEnv     = SEnv 0 []
+
+      -- Top level functions have no class attributes. 
       functions       = zip (repeat []) f
 
+      -- Methods desugared into top level functions.
       methodsTopLevel = concatMap
                         (\(class', (attr, methods)) ->
                            zip (repeat (map (\(StrField _ id) -> id) attr))
                                (map (desugarMethod class') methods)
                         ) (M.toList classes)
 
-  desugaredTopLevel  <- evalStateT
-                        (runReaderT (mapM (uncurry desugarFnDef)
+  desugaredTopLevel  <- CMS.evalStateT
+                        (CMR.runReaderT (mapM (uncurry desugarFnDef)
                                           (functions ++ methodsTopLevel))
                          initialREnv)
                         initialSEnv
 
-  return (structs, desugaredTopLevel, objectH)
+  return (structs, desugaredTopLevel)
 
 -- | Check top level struct declaration against pointer declaration,
---   checking for name clashes.
+--   checking for name clashes. Also check that Classes do not clash
+--   with Structures.
 checkStructs :: [TypeDecl] -- ^ Pointer definitions
              -> [TypeDecl] -- ^ Struct  definitions
              -> [TypeDecl] -- ^ Classes definitions
@@ -162,12 +176,12 @@ checkStructs pointerDefs structDefs classDefs = do
                                                , show name
                                                , "doesnt make sens"]
                       Just (a,m) ->
-                        do let Just supertypes = M.lookup parent objectH 
+                        do let Just supertypes = M.lookup parent objectH
                            return (a,m,parent : supertypes)
 
               let newPtrs    = M.insert name name ptrs
                   newObjectH = M.insert name supertypes objectH
-              checkedFields <- 
+              checkedFields <-
                 foldM
                 (\f (StrField t id) ->
                    case t of
@@ -195,7 +209,8 @@ checkStructs pointerDefs structDefs classDefs = do
   return (newStrs, newPtrs, classes, objectH)
     where
       fnEq (FunDef _ id1 _ _) (FunDef _ id2 _ _) = id1 == id2
-                                                   
+
+-- | Desugar a function definition.
 desugarFnDef :: [Ident] -> FnDef -> Desugar FnDef
 desugarFnDef classAttr (FunDef type' id args block) = do
   newClassAttr classAttr
@@ -205,15 +220,18 @@ desugarFnDef classAttr (FunDef type' id args block) = do
   emptyClassAttr
   return (FunDef desugaredType id desugaredArgs desugaredBlock)
 
+-- | Desgugar an Argument.
 desugarArg :: Arg -> Desugar Arg
 desugarArg (Argument type' id) = do
   desugaredType <- desugarType type'
   deleteClassAttr id
   return (Argument desugaredType id)
 
+-- | Desugar a block.
 desugarBlock :: Block -> Desugar Block
 desugarBlock (SBlock stmts) = fmap SBlock $ mapM desugarStmt stmts
 
+-- | Desugar a statement.
 desugarStmt :: Stmt -> Desugar Stmt
 desugarStmt stmt = case stmt of
   BStmt block  -> fmap BStmt $ desugarBlock block
@@ -244,7 +262,7 @@ desugarStmt stmt = case stmt of
                               , desugaredStmt
                               ]))
                   ]))
-  For (ForDecl t id) _ innerStm -> fail "The expression should be a variable."
+  For _ _ _ -> fail "The expression should be a variable."
   Ass lval expr   -> liftM2 Ass (desugarLVal lval) (desugarExpr expr)
   Ret expr        -> liftM Ret $ desugarExpr expr
   Cond expr stmt  -> liftM2 Cond (desugarExpr expr) (desugarStmt stmt)
@@ -256,6 +274,7 @@ desugarStmt stmt = case stmt of
   Decr lval       -> liftM Decr $ desugarLVal lval
   _               -> return stmt
 
+-- | Desugar a LVal
 desugarLVal :: LVal -> Desugar LVal
 desugarLVal lval = case lval of
   LValVar id dimas  -> do
@@ -263,10 +282,10 @@ desugarLVal lval = case lval of
     if isAttr then
       return (LValStr (Ident "self") id)
     else
-      liftM (LValVar id) (mapM desugarDimA dimas) 
+      liftM (LValVar id) (mapM desugarDimA dimas)
   LValStr id1 id2   -> return (LValStr id1 id2)
 
-
+-- | Desugar a Item.
 desugarItem :: Item -> Desugar Item
 desugarItem item = case item of
   Init id expr -> do
@@ -277,6 +296,10 @@ desugarItem item = case item of
     deleteClassAttr id
     return (NoInit id)
 
+-- | Desugar a Type.
+--   If the type is a Name (Structures, Classes) then
+--   the type is desugared into the name of the structure
+--   is pointing to, adding subtype information to it.
 desugarType :: Type -> Desugar Type
 desugarType ty =
   case ty of
@@ -290,9 +313,11 @@ desugarType ty =
                   return (Pointer strName supertypes)
     _            -> return ty
 
+-- | Desugar a DimA.
 desugarDimA :: DimA -> Desugar DimA
 desugarDimA (DimAddr expr) = liftM DimAddr $ desugarExpr expr
 
+-- | Desugar an expresion.
 desugarExpr :: Expr -> Desugar Expr
 desugarExpr expr =
   case expr of
@@ -301,14 +326,14 @@ desugarExpr expr =
       if isAttr then
         return (PtrDeRef (Ident "self") id)
       else
-        liftM (Var id) (mapM desugarDimA dimas) 
+        liftM (Var id) (mapM desugarDimA dimas)
     ENew type' dimas  -> liftM2 ENew (desugarType type') (mapM desugarDimA dimas)
     ENull id -> do
       pointers <- CMR.asks pointers
       case M.lookup id pointers of
         Nothing          -> fail $ "Type not defined: " ++ show id
         Just structName  -> return (ENull structName)
-    EApp id@(Ident name) exprs  -> 
+    EApp id@(Ident name) exprs  ->
       liftM (EApp id) $ mapM desugarExpr exprs
 
     ERel expr1 relop expr2  -> do
