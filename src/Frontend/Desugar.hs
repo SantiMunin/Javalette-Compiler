@@ -203,7 +203,7 @@ checkStructs pointerDefs structDefs classDefs = do
                                   (checkedFields
                                   ,L.unionBy fnEq classMethods parentMethods) classes
                      , newObjectH)
-    ) (structs, M.union pointers (M.mapWithKey const structs)
+    ) (structs, pointers )
       , M.empty, M.map (const []) structs) classDefs
 
   return (newStrs, newPtrs, classes, objectH)
@@ -307,7 +307,7 @@ desugarType ty =
     Ref name -> do
            pointers <- CMR.asks pointers
            case M.lookup name pointers of
-             Nothing -> fail $ "Struct with name: " ++ show name ++ " not defined."
+             Nothing -> return (Pointer strName []) 
              Just strName  ->
                do Just supertypes <- lookSuperTypes strName
                   return (Pointer strName supertypes)
