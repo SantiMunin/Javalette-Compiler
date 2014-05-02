@@ -110,9 +110,9 @@ genCode str (structs, classes, defs) = do
                [] structs
           userClasses = 
             M.foldWithKey
-              (\(Ident className) (superT, fields, methods) classList
+              (\(Ident className) (superT, (parentFields,fields), methods) classList
                   -> concat [ classList
-                            , [TypeDecl className $ Ptr (Def "ClassDescriptor"):map (toPrimTy . (\(StrField t _) -> t)) fields] 
+                            , [TypeDecl className $ Ptr (Def "ClassDescriptor"):map (toPrimTy . (\(StrField t _) -> t)) (parentFields ++ fields)] 
                             , genClassDescriptor className superT methods ]
               ) [] classes
             where genClassDescriptor className parent methods = 
@@ -123,20 +123,29 @@ genCode str (structs, classes, defs) = do
                   getParent [] = Const Null 
                   getParent ((Ident x):_) = Global $ "ClassDescriptor." ++ x
                   getMethod [] = Const Null
-                  getMethod (FunDef _ (Ident mName) _ _:_) = 
-                    Global ("ClassMethod."++mName)
+                  getMethod ((MethodDef _ (Ident mName) _ _ _):_) = 
+                    Global ("ClassMethod." ++ mName)
                   genMethodChain _ [] = []
                   genMethodChain classHash [method] = [genMethodEntry classHash method Nothing]
-                  genMethodChain classHash (method:tail@((FunDef _ (Ident next) _ _):_)) = genMethodChain classHash tail ++ [genMethodEntry classHash method (Just next)]
-                  genMethodEntry classHash (FunDef ret_type (Ident mName) args _) next = GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ mName)
-                                                                  [(I64, Const $ CI64 $ fromIntegral $ (hashWithSalt classHash mName)), 
-                                                                   (Ptr (Def "ClassMethod"), case next of 
-                                                                                              Nothing -> Const Null 
-                                                                                              Just x -> Global $ ("ClassMethod."++x)),
-                                                                   (Ptr I8, Const $ LitCode $ "bitcast (" ++ show (toPrimTy ret_type) ++ " (" ++ printArgs args ++ ")* @" ++ mName ++ " to i8*)")]
-                  printArgs [] = ""
-                  printArgs [(Argument t _)] = show $ toPrimTy $ t
-                  printArgs list = intercalate "," $ map (show . toPrimTy . (\(Argument t _) -> t)) list
+                  genMethodChain classHash (method:tail@((MethodDef _ (Ident next) _ _ _):_)) = genMethodChain classHash tail ++ [genMethodEntry classHash method (Just next)]
+                  genMethodEntry classHash (MethodDef ret_type (Ident mName) obj args _) next =
+                    GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ mName)
+                                 [(I64, Const $ CI64 $ fromIntegral $ (hashWithSalt classHash mName)), 
+                                  (Ptr (Def "ClassMethod")
+                                  , case next of 
+                                      Nothing -> Const Null 
+                                      Just x -> Global $ ("ClassMethod."++x)),
+                                  ( Ptr I8
+                                  , Const (LitCode $
+                                           concat ["bitcast ("
+                                                  ,show (toPrimTy ret_type)
+                                                  , " ("
+                                                  , intercalate "," $ "i8*" : map
+                                                   (show . toPrimTy . (\(Argument t _) -> t)) args
+                                                  , ")* @"
+                                                  , mName
+                                                  , " to i8*)"]))]
+
 
 
 

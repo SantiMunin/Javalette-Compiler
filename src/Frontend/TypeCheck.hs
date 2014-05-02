@@ -201,7 +201,7 @@ typeCheckLVal lval =
              do classes <- CMR.asks classes
                 case M.lookup className classes of
                   Nothing -> fail $ "Class " ++ show className ++ " not defined."
-                  Just (_ , fields, _) -> 
+                  Just (_ , (_,fields), _) -> 
                     do case lookup field . map (\(StrField t id) -> (id,t))
                               $ fields of
                          Nothing ->
@@ -364,7 +364,7 @@ inferTypeExpr exp =
                      Nothing -> fail "Trying to reference a field that doesn't exists."
                      Just t' -> return $ ETyped exp t'
                   Object className superT -> do 
-                    Just (_, fields, _) <- CMR.asks (M.lookup className . classes)
+                    Just (_, (_,fields), _) <- CMR.asks (M.lookup className . classes)
                     case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                        Nothing -> fail "Trying to reference a field that doesn't exists."
                        Just t' -> return $ ETyped exp t'

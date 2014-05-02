@@ -12,7 +12,7 @@ import           Control.Monad        (foldM, liftM, liftM2, liftM3)
 
 import           Data.Map             (Map)
 import qualified Data.Map             as M (empty, insert, lookup, map,
-                                            mapWithKey, toList, union)
+                                            mapWithKey, toList, union, fromList, foldl)
 
 import qualified Data.List            as L (delete, union, unionBy)
 
@@ -65,22 +65,36 @@ desugar:: Program -> Err (Structs, Classes, [FnDef])
 desugar (Prog defs) = do
   let (s, p, c, f)   = splitDefinitions defs
   (structs,pointers)  <- checkStructs p s
-  (classes,methods )  <- checkClasses c
+  classes             <- checkClasses c
                          
   let initialREnv     = REnv pointers classes
       initialSEnv     = SEnv 0 []
 
-      -- Top level functions have no class attributes. 
-      functionsTL     = zip (repeat Nothing) f
-      methodsTL       = methods
-                                     
-  desugaredTopLevel  <- CMS.evalStateT
-                        (CMR.runReaderT (mapM
-                                         (uncurry desugarFnDef)
-                                         (functionsTL ++ methodsTL))
+  desugaredFunctions  <- CMS.evalStateT
+                        (CMR.runReaderT (desugarFunctions f)
                          initialREnv)
                         initialSEnv
-  return (structs, classes, desugaredTopLevel)
+
+  desugaredClasses   <- CMS.evalStateT
+                        (CMR.runReaderT (desugarClasses classes)
+                            initialREnv)
+                        initialSEnv
+
+  let desugaredMethods = concatMap (\(_,(_,_,m)) -> m) $ M.toList desugaredClasses
+                         
+  return (structs, desugaredClasses, desugaredFunctions ++ desugaredMethods)
+
+desugarFunctions :: [FnDef] -> Desugar [FnDef]
+desugarFunctions = mapM desugarFunDef
+
+desugarClasses :: Classes -> Desugar Classes
+desugarClasses  =
+  fmap M.fromList .
+  mapM (\(name,(type',(parentAttr,attr),methods)) ->
+          do  desugaredMethods <-
+                mapM (desugarMethodDef (map (\(StrField _ id) -> id) attr)) methods
+              return (name,(type',(parentAttr,attr),desugaredMethods)))
+  . M.toList
 
 -- | Check top level struct declaration against pointer declaration,
 --   checking for name clashes. Also check that Classes do not clash
@@ -138,27 +152,27 @@ checkStructs pointerDefs structDefs  = do
 -- | Check all class defined by user returning a suitable representation.
 --   Not yet implemented to check clashes with structures!!!
 checkClasses :: [TypeDecl] -- ^ Class  definitions
-             -> Err (Classes, [(Maybe [Ident], FnDef)])
+             -> Err Classes
 checkClasses classDef = 
   do classesInfo <- findClassesInfo
      foldM
-      (\(classes,methods)
+      (\classes
         (ClassDef className@(Ident class') hierarchy attr classMethods) ->
          case M.lookup className classes of
            Just _  -> fail $ concat ["Class name "
                                     , show className
                                     , " already defined."]
            Nothing ->
-             do (superT, parentAttr, parentMethods) <-
-                  case hierarchy of
-                    HEmpty -> return ([],[],[])
-                    HExtend parent ->
-                      case M.lookup parent classes of
-                        Nothing -> fail $ concat [ "Class "
-                                                 , show className
-                                                 , "extending a class not defined."]
-                        Just (superT,attr,methds) ->
-                          return (parent : superT, attr, methds)
+             do (superT, parentAttr) <-
+                   case hierarchy of
+                     HEmpty -> return ([],[])
+                     HExtend parent ->
+                       case M.lookup parent classes of
+                         Nothing -> fail $ concat [ "Class "
+                                                  , show className
+                                                  , "extending a class not defined."]
+                         Just (superT,(hierarchyAttr,parentAttr),_) ->
+                           return (parent : superT, L.union hierarchyAttr parentAttr)
 
                 attr <-
                   foldM
@@ -170,51 +184,52 @@ checkClasses classDef =
                          else
                            case M.lookup name classesInfo of
                              Nothing      -> fail $ concat [ "Class "
-                                                 , show name
-                                                 , " not defined."]
+                                                           , show name
+                                                           , " not defined."]
                              Just superT ->
                                return $ fields ++ [StrField (Object name superT) id]
                        _ ->  return  $ fields ++ [StrField t id]
                   ) [] attr
-
-                let desugaredMethods =
+                
+                let methods =
                       map (\(FunDef type' (Ident id) args block) ->
-                             (Just $ map (\(StrField t id) -> id) attr
-
-                             ,MethodDef type'
-                                        (Ident $ class'  ++ "." ++ id)
-                                        (Argument (Object className superT) (Ident "self"))
-                                        args
-                                        block)) classMethods
+                             MethodDef
+                                type'
+                                (Ident $ class'  ++ "." ++ id)
+                                (Argument (Object className superT) (Ident "self"))
+                                args
+                                block) classMethods
                                                   
                 return (M.insert className ( superT
-                                      , L.union parentAttr attr  
-                                      , classMethods)
-                        classes
-                       , methods ++ desugaredMethods)
-      ) (M.empty, []) classDef 
+                                           , (parentAttr,attr)  
+                                           , methods)
+                        classes)
+      ) M.empty classDef 
   where
     findClassesInfo :: Err (Map Ident [Ident])
-    findClassesInfo = foldM (\m (ClassDef className hierarchy _ _) -> 
-                        do superT <- case hierarchy of
-                                          HEmpty -> return []
-                                          HExtend parent -> 
-                                            case M.lookup parent m of
-                                              Nothing -> fail $ concat [ "Class "
-                                                                       , show className
-                                                                       , "extending a class not defined."]
-                                              Just superT -> return $  parent:superT
-                           return $ M.insert className superT m) M.empty classDef 
+    findClassesInfo =
+      foldM (\m (ClassDef className hierarchy _ _) -> 
+               do superT <- case hierarchy of
+                              HEmpty -> return []
+                              HExtend parent -> 
+                                case M.lookup parent m of
+                                  Nothing -> fail $ concat [ "Class "
+                                                           , show className
+                                                           , "extending a class not defined."]
+                                  Just superT -> return $  parent:superT
+                  return $ M.insert className superT m) M.empty classDef 
 
 -- | Desugar a function definition.
-desugarFnDef :: Maybe [Ident] -> FnDef -> Desugar FnDef
-desugarFnDef Nothing (FunDef type' id args block) =
+desugarFunDef :: FnDef -> Desugar FnDef
+desugarFunDef (FunDef type' id args block) =
   do desugaredType  <- desugarType type'
      desugaredArgs  <- mapM desugarArg args
      desugaredBlock <- desugarBlock block
      return (FunDef desugaredType id desugaredArgs desugaredBlock)
 
-desugarFnDef (Just classAttr) (MethodDef type' id obj args block) =
+-- | Desugar a Method definition.
+desugarMethodDef :: [Ident] -> FnDef -> Desugar FnDef
+desugarMethodDef classAttr (MethodDef type' id obj args block) =
   do
     newClassAttr classAttr
     desugaredType  <- desugarType type'
