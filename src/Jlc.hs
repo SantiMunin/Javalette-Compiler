@@ -51,8 +51,8 @@ main = do
                     printErr "ERROR"
                     printErr $ "DESUGAR ERROR: " ++ err
                     exitFailure
-                Ok (str,fnDefs) ->
-                  case typecheck (str,fnDefs) of
+                Ok (str, classes, fnDefs) -> do
+                  case typecheck (str, classes, fnDefs) of
                     Bad err ->
                       do
                         printErr "ERROR"
@@ -60,14 +60,14 @@ main = do
                         when debug  (printErr (printTree fnDefs))
                         when debug  (printErr (show str        ))
                         exitFailure
-                    Ok (str, typedFnDefs) ->
+                    Ok (str, classes, typedFnDefs) ->
                       do
                         printErr "OK"
                         when debug  (printErr (printTree typedFnDefs))
                         when debug  (printErr (show str         ))
                         case backend of
                           "-llvm" ->
-                            case genCode name (str, typedFnDefs) of
+                            case genCode name (str, classes, typedFnDefs) of
                               Bad err ->
                                 do
                                   printErr "ERROR"

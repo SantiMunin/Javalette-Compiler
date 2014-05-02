@@ -140,60 +140,71 @@ checkStructs pointerDefs structDefs  = do
 checkClasses :: [TypeDecl] -- ^ Class  definitions
              -> Err (Classes, [(Maybe [Ident], FnDef)])
 checkClasses classDef = 
-    foldM
-    (\(classes,methods)
-      (ClassDef className@(Ident class') hierarchy attr classMethods) ->
-       case M.lookup className classes of
-         Just _  -> fail $ concat ["Class name "
-                                  , show className
-                                  , "already defined."]
-         Nothing ->
-           do (superT, parentAttr, parentMethods) <-
-                case hierarchy of
-                  HEmpty -> return ([],[],[])
-                  HExtend parent ->
-                    case M.lookup parent classes of
-                      Nothing -> fail $ concat [ "Class "
-                                               , show className
-                                               , "extending a class not defined."]
-                      Just (superT,attr,methds) ->
-                        return (parent : superT, attr, methds)
+  do classesInfo <- findClassesInfo
+     foldM
+      (\(classes,methods)
+        (ClassDef className@(Ident class') hierarchy attr classMethods) ->
+         case M.lookup className classes of
+           Just _  -> fail $ concat ["Class name "
+                                    , show className
+                                    , " already defined."]
+           Nothing ->
+             do (superT, parentAttr, parentMethods) <-
+                  case hierarchy of
+                    HEmpty -> return ([],[],[])
+                    HExtend parent ->
+                      case M.lookup parent classes of
+                        Nothing -> fail $ concat [ "Class "
+                                                 , show className
+                                                 , "extending a class not defined."]
+                        Just (superT,attr,methds) ->
+                          return (parent : superT, attr, methds)
 
-              attr <-
-                foldM
-                (\fields (StrField t id) ->
-                   case t of
-                     Ref name ->
-                       if name == className then
-                         return (fields ++ [StrField (Object name superT) id])
-                       else
-                         case M.lookup name classes of
-                           Nothing      -> fail $ concat [ "Class "
-                                               , show name
-                                               , "not defined."]
-                           Just (superT,_,_) ->
-                             return $ fields ++ [StrField (Object name superT) id]
-                     _ ->  return  $ fields ++ [StrField t id]
-                ) [] attr
+                attr <-
+                  foldM
+                  (\fields (StrField t id) ->
+                     case t of
+                       Ref name ->
+                         if name == className then
+                           return (fields ++ [StrField (Object name superT) id])
+                         else
+                           case M.lookup name classesInfo of
+                             Nothing      -> fail $ concat [ "Class "
+                                                 , show name
+                                                 , " not defined."]
+                             Just superT ->
+                               return $ fields ++ [StrField (Object name superT) id]
+                       _ ->  return  $ fields ++ [StrField t id]
+                  ) [] attr
 
-              let desugaredMethods =
-                    map (\(FunDef type' (Ident id) args block) ->
-                           (Just $ map (\(StrField t id) -> id) attr
+                let desugaredMethods =
+                      map (\(FunDef type' (Ident id) args block) ->
+                             (Just $ map (\(StrField t id) -> id) attr
 
-                           ,MethodDef type'
-                                      (Ident $ class'  ++ "." ++ id)
-                                      (Argument (Object className superT) (Ident "self"))
-                                      args
-                                      block)) classMethods
-                                                
-              return (M.insert className ( superT
-                                    , attr
-                                    , classMethods)
-                      classes
-                     , methods ++ desugaredMethods)
-    ) (M.empty, []) classDef 
+                             ,MethodDef type'
+                                        (Ident $ class'  ++ "." ++ id)
+                                        (Argument (Object className superT) (Ident "self"))
+                                        args
+                                        block)) classMethods
+                                                  
+                return (M.insert className ( superT
+                                      , L.union parentAttr attr  
+                                      , classMethods)
+                        classes
+                       , methods ++ desugaredMethods)
+      ) (M.empty, []) classDef 
   where
-    fnEq (FunDef _ id1 _ _) (FunDef _ id2 _ _) = id1 == id2 
+    findClassesInfo :: Err (Map Ident [Ident])
+    findClassesInfo = foldM (\m (ClassDef className hierarchy _ _) -> 
+                        do superT <- case hierarchy of
+                                          HEmpty -> return []
+                                          HExtend parent -> 
+                                            case M.lookup parent m of
+                                              Nothing -> fail $ concat [ "Class "
+                                                                       , show className
+                                                                       , "extending a class not defined."]
+                                              Just superT -> return $  parent:superT
+                           return $ M.insert className superT m) M.empty classDef 
 
 -- | Desugar a function definition.
 desugarFnDef :: Maybe [Ident] -> FnDef -> Desugar FnDef
@@ -210,7 +221,7 @@ desugarFnDef (Just classAttr) (MethodDef type' id obj args block) =
     desugaredArgs  <- mapM desugarArg args
     desugaredBlock <- desugarBlock block
     emptyClassAttr
-    return (FunDef desugaredType id (obj : desugaredArgs) desugaredBlock)
+    return (MethodDef desugaredType id obj desugaredArgs desugaredBlock)
 
   
 -- | Desgugar an Argument.

@@ -18,6 +18,7 @@ type Id = String
 -- | A LLVM type. It includes primitive (int, floating p., boolean 
 -- void, 8-bit int), pointers and arrays.
 data Ty = I32
+        | I64 -- ^ To allow 64-bits hashes
         | D
         | I1
         | V
@@ -29,6 +30,7 @@ data Ty = I32
           
 instance Show Ty where
   show I32 = "i32"
+  show I64 = "i64"
   show D   = "double"
   show I1  = "i1"
   show V   = "void"
@@ -39,17 +41,21 @@ instance Show Ty where
   
 -- | Constants are directly written on the target code. 
 data Constant = CI32 { i32 :: Integer }
+              | CI64 { i64 :: Integer }
               | CD   { d   :: Double  }
               | CI1  { i1  :: Bool }
               | Null
               | Undef
+              | LitCode  { text :: String } -- ^ Literal code
                 
 instance Show Constant where
-  show (CI32 int ) = show int
+  show (CI32 int)  = show int
+  show (CI64 int)  = show int
   show (CD double) = show double
   show (CI1 bool)  = if bool then "true" else "false" 
   show Null        = "null"
   show Undef       = "undef"
+  show (LitCode s)     = s
 
 -- | A LLVM register. Shown on the target code as
 -- %t ++ name.
@@ -61,11 +67,13 @@ instance Show Register where
 -- | An operand can be a constant, a register, or nothing.
 data Operand = Const { const :: Constant }
              | Reg   { reg   :: Register }
+             | Global { name :: String }
              | Emp
                
 instance Show Operand where
   show (Const c) = show c
   show (Reg   r) = show r
+  show (Global s) = "@"++s
 
 -- | A nonterminator operation is just any operation which does not 
 -- ends a function (i.e. arithmetic, comparisons, stores, loads...).
@@ -328,6 +336,7 @@ mkFun id ty args instr = Fun id ty args (go instr ([], Just (SLab "entry", [])))
 
 data TopLevel = FunDecl  Ty Id [Ty]
               | TypeDecl Id [Ty]
+              | GlobalDecl Ty Id [(Ty, Operand)]
 
 instance Show TopLevel where
   show (FunDecl retType name argTypes) =
@@ -344,4 +353,12 @@ instance Show TopLevel where
            , " = type {"
            , concat . intersperse "," . map show $ typeList
            , "}" ]
+  show (GlobalDecl ty name fields) =
+    concat [ "@"
+           , name
+           , " = global "
+           , show ty
+           , "{ "
+           , intercalate "," $ map (\(t, name) -> show t ++ " " ++ show name) fields
+           , " }" ]
   

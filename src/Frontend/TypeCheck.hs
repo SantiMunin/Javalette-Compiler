@@ -10,6 +10,7 @@ import           Javalette.ErrM
 import           Data.Map             (Map)
 import qualified Data.Map             as M
 import qualified Data.Set             as S
+import           Data.Maybe           (catMaybes)
 
 import           Control.Monad        (forM, unless, zipWithM_)
 import           Control.Monad.Reader as CMR
@@ -20,6 +21,7 @@ import           Control.Monad.State  as CMS
 -- and variables defined. It supports different scopes.
 data ReadEnv  = REnv { functions :: FunHeader
                      , structs   :: Structs
+                     , classes   :: Classes
                      }
 
 data StateEnv = SEnv { context :: [Context]
@@ -70,24 +72,44 @@ newBlock = CMS.modify (\env -> env {context =  M.empty : context env})
 removeBlock :: TypeCheck ()
 removeBlock  = CMS.modify (\env -> env { context = tail $ context env})
 
+-- | Looks for a method in the given class hierarchy.
+lookupMethod :: [Ident] -> Ident -> TypeCheck ([Type], Type)
+lookupMethod classes (Ident methodName) = 
+  do let names = map (\(Ident className) -> Ident $ className ++ "." ++ methodName) classes
+     matches <- mapM lookupFun names
+     case catMaybes matches of
+          [] -> fail $ "Method " ++ methodName ++ " not defined in the class hierarchy (" ++ show classes ++ ")."
+          (x:_) -> return x
+
+
 -- | Looks for a function in the environment.
-lookupFun :: Ident -> TypeCheck ([Type],Type)
+lookupFun :: Ident -> TypeCheck (Maybe ([Type],Type))
 lookupFun id = do
   functions <- CMR.asks functions
   case M.lookup id functions of
-    Nothing -> fail $ "Function " ++ show id ++ " not declared."
-    Just t  -> return t
+    Nothing -> return Nothing
+    Just t  -> return $ Just t
 
 -- | Checks all function definitions at the top level.
 checkFuns ::[FnDef] -> Err FunHeader
 checkFuns functions =
-  foldM (\m (FunDef ret_t id args _ ) ->
+  foldM (\m topLevel -> 
+    case topLevel of
+      (FunDef ret_t id args _ ) ->
          do case M.lookup id m of
               Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
               Nothing ->
                 do let argTypes = map (\(Argument t _) -> t) args
-                   return $ M.insert id (argTypes, ret_t) m)
-          M.empty (initializeDefs ++ functions)
+                   return $ M.insert id (argTypes, ret_t) m
+      (MethodDef ret_t id obj args _) ->
+         do case M.lookup id m of
+              Just  _ -> fail $ "Method " ++ show id ++ " defined twice."
+              Nothing ->
+                do let argTypes = map (\(Argument t _) -> t) (obj:args)
+                   return $ M.insert id (argTypes, ret_t) m
+              
+  ) M.empty (initializeDefs ++ functions)
+
     where
       initializeDefs =
         [ FunDef Void (Ident "printInt")    [Argument Int (Ident "x")]  (SBlock [])
@@ -104,17 +126,18 @@ checkFuns functions =
 
 
 -- | Typechecks a program.
-typecheck :: (Structs, [FnDef]) -> Err (Structs, [FnDef])
-typecheck (structDefs, fnDefs) = do
+typecheck :: (Structs, Classes, [FnDef]) -> Err (Structs, Classes, [FnDef])
+typecheck (structDefs, classDefs, fnDefs) = do
   initFuns  <- checkFuns fnDefs
   let initialREnv = REnv { functions   = initFuns
-                         , structs     = structDefs }
+                         , structs     = structDefs 
+                         , classes     = classDefs  }
 
       initialSEnv = SEnv { context = [] }
   typedFnDefs <- evalStateT
                  (runReaderT (mapM typeCheckFun fnDefs) initialREnv)
                  initialSEnv
-  return (structDefs, typedFnDefs)
+  return (structDefs, classDefs, typedFnDefs)
 
 -- | Typechecks a function definition.
 typeCheckFun :: FnDef -> TypeCheck FnDef
@@ -127,6 +150,14 @@ typeCheckFun (FunDef ret_t id args (SBlock stmts)) = do
   removeBlock
   return $ FunDef ret_t id args typedStmts
 
+typeCheckFun (MethodDef ret_t id obj args (SBlock stmts)) =
+  do newBlock
+     mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) (obj:args)
+     (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t (BStmt (SBlock stmts))
+     unless (has_ret || (=~=) ret_t Void)
+             $ fail $ "Missing return statement in function " ++ show id
+     removeBlock
+     return $ MethodDef ret_t id obj args typedStmts
 
 -- Casts a dimension addressing to an expression.
 dimToExpr :: DimA -> Expr
@@ -164,9 +195,18 @@ typeCheckLVal lval =
                     do case lookup field . map (\(StrField t id) -> (id,t))
                               $ fields of
                          Nothing ->
-                           fail "Trying to reference a field that doesn't exists"
+                           fail "Trying to reference a field that doesn't exist"
                          Just t' -> return $ LValTyped lval t'
-
+           Object className superT -> 
+             do classes <- CMR.asks classes
+                case M.lookup className classes of
+                  Nothing -> fail $ "Class " ++ show className ++ " not defined."
+                  Just (_ , fields, _) -> 
+                    do case lookup field . map (\(StrField t id) -> (id,t))
+                              $ fields of
+                         Nothing ->
+                           fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
+                         Just t' -> return $ LValTyped lval t'
            _ -> error $ "Variable " ++ show name ++ " must be a pointer."
 
 
@@ -256,7 +296,9 @@ typeCheckStmt funType stm =
 (=~=) (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
 (=~=) (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
 (=~=) t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
+(=~=) (Object className superT) (Object className2 superT2) = className2 `elem` className:superT
 (=~=) t1 t2 = t1 == t2
+
 -- | Checks the type of an expresion in the given environment.
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
 checkTypeExpr t exp = do
@@ -314,26 +356,44 @@ inferTypeExpr exp =
          return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
 
       PtrDeRef id1 id2  -> do
-             Pointer structName <- lookupVar id1
-             Just fields <- CMR.asks (M.lookup structName . structs)
-             case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
-               Nothing -> fail "Trying to reference a field that doesn't exists."
-               Just t' -> return $ ETyped exp t'
+             deref <- lookupVar id1
+             case deref of
+                  Pointer structName -> do
+                   Just fields <- CMR.asks (M.lookup structName . structs)
+                   case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
+                     Nothing -> fail "Trying to reference a field that doesn't exists."
+                     Just t' -> return $ ETyped exp t'
+                  Object className superT -> do 
+                    Just (_, fields, _) <- CMR.asks (M.lookup className . classes)
+                    case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
+                       Nothing -> fail "Trying to reference a field that doesn't exists."
+                       Just t' -> return $ ETyped exp t'
+                  _ -> fail $ "Trying to dereference a primitive type"
 
-      ENull id  -> return (ETyped NullC (Pointer id))
+      ENull id  -> 
+        do classes <- CMR.asks classes 
+           case M.lookup id classes of
+                Just (superT, _, _) -> return (ETyped NullC (Object id superT))
+                Nothing -> do structs <- CMR.asks structs
+                              if M.member id structs then
+                                return (ETyped NullC (Pointer id))
+                              else fail $ show id ++ " is not a nullable type." 
 
       EString s        -> return $ ETyped exp String
 
       EApp id args     ->
-        do (args_type, ret_type) <- lookupFun id
-           typedArgs <- checkArgs id args_type args
-           return $ ETyped (EApp id typedArgs) ret_type
+        do fun <- lookupFun id
+           case fun of 
+            Nothing -> fail $ "Function " ++ show id ++ " not defined."
+            Just (args_type, ret_type) -> 
+              do typedArgs <- checkArgs id args_type args
+                 return $ ETyped (EApp id typedArgs) ret_type
 
-      MApp (Ident id) obj args ->
+      MApp id obj args ->
         do (ETyped _ (Object className superT)) <- inferTypeExpr obj
-           (args_type, ret_type) <- lookupFun methodClass
-           typedArgs <- checkArgs methodClass args_type (obj : args)
-           return $ ETyped (EApp methodClass typedArgs) ret_type
+           (args_type, ret_type) <- lookupMethod (className:superT) id
+           (typedObj: typedArgs) <- checkArgs id args_type (obj : args)
+           return $ ETyped (MApp id typedObj typedArgs) ret_type
 
       EMul exp1 op exp2  -> do
         typedE1@(ETyped _ t1)  <- inferTypeExpr exp1

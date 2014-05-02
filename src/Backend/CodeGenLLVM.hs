@@ -12,9 +12,11 @@ import           Internal.Types
 import           Control.Monad          (foldM, forM, void, when)
 import qualified Control.Monad.State    as CMS
 
-import           Data.List              (elemIndex, intersperse)
+import           Data.List              (elemIndex, intersperse, intercalate)
 import qualified Data.Map               as M
 import           Data.Maybe             (fromJust)
+
+import           Data.Hashable
 
 -- | Debugging utils.
 debug  :: Bool
@@ -22,10 +24,6 @@ debug  =  True
 
 debugger :: String -> GenCode ()
 debugger str = when debug (emit $ NonTerm (Lit ("\n;; " ++ str ++ "\n")) Nothing)
-
-
-
-
 
 -- | State of code generator (addresses, labels, variables,
 -- functions, global definitions, code generated...)
@@ -98,10 +96,10 @@ headers = [ FunDecl V "printInt" [I32]
           , TypeDecl "arrayi1" [I32, I32, Ptr I32, Ptr I1]]
 
 -- | Main function, generates the program's LLVM code.
-genCode :: String -> (Structs,[FnDef]) -> Err String
-genCode str (structs,defs) = do
+genCode :: String -> (Structs, Classes, [FnDef]) -> Err String
+genCode str (structs, classes, defs) = do
   let (funs,s) =  runGenCode structs defs (mapM genCodeFunction defs)
-  return $ concat [ unlines $ map show $ headers ++ userStructs
+  return $ concat [ unlines $ map show $ headers ++ userStructs ++ userClasses
                   , unlines (globalDef s)
                   , concatMap show funs ]
     where userStructs  =
@@ -110,6 +108,37 @@ genCode str (structs,defs) = do
                   -> accum ++ [TypeDecl name $
                                map (toPrimTy . (\(StrField t _) -> t)) fields])
                [] structs
+          userClasses = 
+            M.foldWithKey
+              (\(Ident className) (superT, fields, methods) classList
+                  -> concat [ classList
+                            , [TypeDecl className $ Ptr (Def "ClassDescriptor"):map (toPrimTy . (\(StrField t _) -> t)) fields] 
+                            , genClassDescriptor className superT methods ]
+              ) [] classes
+            where genClassDescriptor className parent methods = 
+                    [GlobalDecl (Def "ClassDescriptor") ("ClassDescriptor." ++ className) 
+                      [(Ptr (Def "ClassDescriptor"), getParent parent)
+                      , (Ptr (Def "ClassMethod"), getMethod methods)]]
+                    ++ genMethodChain (hash className) methods
+                  getParent [] = Const Null 
+                  getParent ((Ident x):_) = Global $ "ClassDescriptor." ++ x
+                  getMethod [] = Const Null
+                  getMethod (FunDef _ (Ident mName) _ _:_) = 
+                    Global ("ClassMethod."++mName)
+                  genMethodChain _ [] = []
+                  genMethodChain classHash [method] = [genMethodEntry classHash method Nothing]
+                  genMethodChain classHash (method:tail@((FunDef _ (Ident next) _ _):_)) = genMethodChain classHash tail ++ [genMethodEntry classHash method (Just next)]
+                  genMethodEntry classHash (FunDef ret_type (Ident mName) args _) next = GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ mName)
+                                                                  [(I64, Const $ CI64 $ fromIntegral $ (hashWithSalt classHash mName)), 
+                                                                   (Ptr (Def "ClassMethod"), case next of 
+                                                                                              Nothing -> Const Null 
+                                                                                              Just x -> Global $ ("ClassMethod."++x)),
+                                                                   (Ptr I8, Const $ LitCode $ "bitcast (" ++ show (toPrimTy ret_type) ++ " (" ++ printArgs args ++ ")* @" ++ mName ++ " to i8*)")]
+                  printArgs [] = ""
+                  printArgs [(Argument t _)] = show $ toPrimTy $ t
+                  printArgs list = intercalate "," $ map (show . toPrimTy . (\(Argument t _) -> t)) list
+
+
 
 -- | Emits an intruction.
 emit :: Instr -> GenCode ()
@@ -178,7 +207,9 @@ toPrimTy t = case t of
                Bool       -> I1
                DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
-               Pointer (Ident id) -> Ptr (Def id)
+               Pointer (Ident id)  -> Ptr (Def id)
+               Object (Ident name) objtype -> Ptr (Def name) 
+               other -> error $ "WTF: " ++ show other
 
 -- | Creates a new label.
 freshLabel :: GenCode Label
@@ -189,10 +220,8 @@ freshLabel = do
   return (IntLab next)
 
 -- | Adds a function to the environment.
-newFunction :: [Arg] -> GenCode ()
-newFunction args = do
-  env <- CMS.get
-  CMS.modify (\env -> env { localvar = [M.empty], code = [], nextLabel = 0 })
+newFunction :: GenCode ()
+newFunction = CMS.modify (\env -> env { localvar = [M.empty], code = [], nextLabel = 0 })
 
 -- | New block implies new scope of variables.
 newBlock :: GenCode ()
@@ -209,7 +238,7 @@ removeBlock = do
 -- | Generates the code of a function.
 genCodeFunction :: FnDef -> GenCode Function
 genCodeFunction (FunDef t (Ident id) args block) = do
-  newFunction args
+  newFunction 
   mapM_ (\(Argument t ident@(Ident id)) -> do
            addr <- freshVar ident t
            emit $ NonTerm (IAlloc (toPrimTy t)) (Just addr)
@@ -218,10 +247,25 @@ genCodeFunction (FunDef t (Ident id) args block) = do
   when (t == Void) (emit (Term IVRet))
   instr <- CMS.gets code
   return $ mkFun id (toPrimTy t) (toPrimArgs args) (reverse instr)
-    where
-      -- | Translates a list of args to a more suitable type.
-      toPrimArgs :: [Arg] -> [(Id, Ty)]
-      toPrimArgs = map (\(Argument t (Ident id)) -> (id,toPrimTy t))
+genCodeFunction (MethodDef t (Ident id) (Argument objType _) args block) = do
+  newFunction  
+  addr <- freshVar (Ident "self") objType
+  emit $ NonTerm (IAlloc (toPrimTy objType)) (Just addr)
+  castedAddr <- freshLocal
+  emit $ NonTerm (BitCast (Ptr I8) (Register "self") (toPrimTy objType)) (Just castedAddr)
+  emit $ NonTerm (IStore addr (Reg castedAddr) (toPrimTy objType)) Nothing
+  mapM_ (\(Argument t ident@(Ident id)) -> do
+           addr <- freshVar ident t
+           emit $ NonTerm (IAlloc (toPrimTy t)) (Just addr)
+           emit $ NonTerm (IStore addr (Reg $ Register id) (toPrimTy t)) Nothing) args
+  genCodeBlock block
+  when (t == Void) (emit (Term IVRet))
+  instr <- CMS.gets code
+  return $ mkFun id (toPrimTy t) (("self", Ptr I8):toPrimArgs args) (reverse instr)
+
+-- | Translates a list of args to a more suitable type.
+toPrimArgs :: [Arg] -> [(Id, Ty)]
+toPrimArgs = map (\(Argument t (Ident id)) -> (id,toPrimTy t))
 
 -- | Generates a block of statements.
 genCodeBlock :: Block -> GenCode ()
@@ -238,6 +282,7 @@ genCodeItem rawtype (NoInit id)    = do
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
     DimT _ _  -> emit $ NonTerm (IStore addr (Const Undef)      t) Nothing
     Pointer _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
+    Object name _ -> emit $ NonTerm (IStore addr (Const Null) t) Nothing
     where
       t = toPrimTy rawtype
 
@@ -550,21 +595,39 @@ genCodeExpr (ETyped expr t) = case expr of
     return (Reg len)
 
   ENew _ exprDims ->
-    if null exprDims then do
-      let (Pointer (Ident name)) = t
-      debugger "Allocate memory for the structure in the heap"
-      pointerE       <- freshLocal
-      sizeE          <- freshLocal
-      emit $ NonTerm (GetElementPtr (Ptr (Def name)) (Const Null) [(I32, Const (CI32 1))])
-             (Just pointerE)
-      emit $ NonTerm (PtrToInt (Ptr (Def name)) pointerE I32) (Just sizeE)
+    if null exprDims then
+      case t of
+        (Pointer (Ident name)) -> 
+         do debugger "Allocate memory for the structure in the heap"
+            pointerE       <- freshLocal
+            sizeE          <- freshLocal
+            emit $ NonTerm (GetElementPtr (Ptr (Def name)) (Const Null) [(I32, Const (CI32 1))])
+                 (Just pointerE)
+            emit $ NonTerm (PtrToInt (Ptr (Def name)) pointerE I32) (Just sizeE)
 
-      voida         <- freshLocal
-      newStr        <- freshLocal
-      emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, Const (CI32 1)),(I32, Reg sizeE)])
-                                               (Just voida)
-      emit $ NonTerm (BitCast (Ptr I8) voida (Ptr (Def name))) (Just newStr)
-      return (Reg newStr)
+            voida         <- freshLocal
+            newStr        <- freshLocal
+            emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, Const (CI32 1)),(I32, Reg sizeE)])
+                                                   (Just voida)
+            emit $ NonTerm (BitCast (Ptr I8) voida (Ptr (Def name))) (Just newStr)
+            return (Reg newStr)
+        (Object (Ident name) _) ->
+         do debugger "Allocate memory for the structure (object) in the heap"
+            pointerE       <- freshLocal
+            sizeE          <- freshLocal
+            emit $ NonTerm (GetElementPtr (Ptr (Def name)) (Const Null) [(I32, Const (CI32 1))])
+                 (Just pointerE)
+            emit $ NonTerm (PtrToInt (Ptr (Def name)) pointerE I32) (Just sizeE)
+
+            voida         <- freshLocal
+            newStr        <- freshLocal
+            emit $ NonTerm (ICall (Ptr I8) "calloc" [(I32, Const (CI32 1)),(I32, Reg sizeE)])
+                                                   (Just voida)
+            emit $ NonTerm (BitCast (Ptr I8) voida (Ptr (Def name))) (Just newStr)
+            classDescriptorAddr <- freshLocal
+            emit $ NonTerm (GetElementPtr (Ptr (Def name)) (Reg newStr) [(I32, Const (CI32 0)), (I32, Const (CI32 0))]) (Just classDescriptorAddr)
+            emit $ NonTerm (IStore classDescriptorAddr (Global ("ClassDescriptor." ++ name)) (Ptr (Def "ClassDescriptor"))) Nothing
+            return (Reg newStr)
     else do
       str <- freshLocal
       emit $ NonTerm (IAlloc type') (Just str)
@@ -685,6 +748,7 @@ genCodeExpr (ETyped expr t) = case expr of
         rr <- freshLocal
         emit $ NonTerm (ICall (fst types) id (zip (snd types) evExprs)) (Just rr)
         return (Reg rr)
+  MApp (Ident id) obj exprs    -> undefined 
 
   EString str      -> do
     tmp             <- freshLocal
