@@ -50,7 +50,7 @@ initialEnv structs defs =
     , globalvar = 0
     , structs   =
       M.foldWithKey
-         (\(Ident id) (Struct _ fields) accum
+         (\(Ident id) fields accum
             -> M.insert id (map (\(StrField type' (Ident field))
                                    -> (field,toPrimTy type')) fields) accum) M.empty structs}
 
@@ -105,8 +105,8 @@ genCode str (structs,defs) = do
                   , unlines (globalDef s)
                   , concatMap show funs ]
     where userStructs  =
-            M.foldl
-               (\accum (Struct (Ident name) fields)
+            M.foldWithKey
+               (\(Ident name) fields accum
                   -> accum ++ [TypeDecl name $
                                map (toPrimTy . (\(StrField t _) -> t)) fields])
                [] structs
@@ -178,7 +178,7 @@ toPrimTy t = case t of
                Bool       -> I1
                DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
-               Pointer (Ident id) _ -> Ptr (Def id)
+               Pointer (Ident id) -> Ptr (Def id)
 
 -- | Creates a new label.
 freshLabel :: GenCode Label
@@ -237,7 +237,7 @@ genCodeItem rawtype (NoInit id)    = do
     Doub      -> emit $ NonTerm (IStore addr (Const (CD 0))     t) Nothing
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
     DimT _ _  -> emit $ NonTerm (IStore addr (Const Undef)      t) Nothing
-    Pointer _ _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
+    Pointer _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
     where
       t = toPrimTy rawtype
 
@@ -551,7 +551,7 @@ genCodeExpr (ETyped expr t) = case expr of
 
   ENew _ exprDims ->
     if null exprDims then do
-      let (Pointer (Ident name) _) = t
+      let (Pointer (Ident name)) = t
       debugger "Allocate memory for the structure in the heap"
       pointerE       <- freshLocal
       sizeE          <- freshLocal

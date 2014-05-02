@@ -4,12 +4,16 @@ entrypoints Program ;
 
 Prog.      Program ::= [TopDef] ;
 
--- A TopDef is either a type declaration or a top level function.
+-- A TopDef is either a type declaration or a top level function or a method.
 
+-- Function
 TopFnDef.    TopDef ::= FnDef;
-
 FunDef.      FnDef  ::= Type Ident "(" [Arg] ")" Block ;
 
+-- Method
+internal MethodDef. FnDef   ::= Type Ident Arg [Arg] Block;
+
+-- Type Declaration
 TopTypeDecl. TopDef ::= TypeDecl;
 
 StructDef. TypeDecl ::= "struct" Ident "{" [SField] "}"";";
@@ -89,14 +93,18 @@ Array.     Type ::= Type [Dim];
 
 Ref.       Type ::= Ident;
 
-internal Pointer.   Type ::= Ident "[|" [Ident] "|]";
+separator Type "";
+
+internal Pointer.   Type ::= Ident;
+internal Object.    Type ::= Ident "[|" [Ident] "|]";
+
 separator Ident ":";
 separator nonempty Dim "";
 
 internal Struct. Type  ::= Ident [SField];
 
 internal   String. Type ::= "String" ;
-
+internal DimT.   Type   ::= "[<" Type Integer ">]";
 -- Expressions ---------------------------------------------
 
 Var.        Expr6 ::= Ident [DimA] ;
@@ -126,7 +134,7 @@ ELitTrue.  Expr6 ::= "true" ;
 ELitFalse. Expr6 ::= "false" ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")";
-internal   MApp. Expr ::= "." Ident "(" Expr "," [Expr] ")";
+internal   MApp. Expr ::= "." Ident "(" Expr "," [Expr] ")" ;
 
 EString.   Expr6 ::= String ;
 
@@ -150,7 +158,7 @@ coercions  Expr 6 ;
 separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]";
-internal DimT.   Type ::= "DimT" Type Integer;
+
 
 -- operators -----------------------------------------------
 

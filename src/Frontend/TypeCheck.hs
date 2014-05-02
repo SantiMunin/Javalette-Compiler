@@ -156,11 +156,11 @@ typeCheckLVal lval =
     LValStr name field ->
       do t <- lookupVar name
          case t of
-           Pointer strName _ ->
+           Pointer strName ->
              do structs <- CMR.asks structs
                 case M.lookup strName structs of
                   Nothing -> fail $ "Struct " ++ show strName ++ " not defined."
-                  Just (Struct _ fields) ->
+                  Just fields ->
                     do case lookup field . map (\(StrField t id) -> (id,t))
                               $ fields of
                          Nothing ->
@@ -256,10 +256,6 @@ typeCheckStmt funType stm =
 (=~=) (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
 (=~=) (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
 (=~=) t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
-(=~=) (Pointer name1 st) (Pointer name2 st2)
-      | name1 == name2   = True
-      | name2 `elem` st = True
-
 (=~=) t1 t2 = t1 == t2
 -- | Checks the type of an expresion in the given environment.
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
@@ -305,8 +301,10 @@ inferTypeExpr exp =
        -- New object in the heap.
        if null eDims then
          case t of
-           Pointer structName supertypes ->
-             return (ETyped exp (Pointer structName supertypes))
+           Pointer structName ->
+             return (ETyped exp t)
+           Object  className superT ->
+             return (ETyped exp t)
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        -- New array of type t
        else do
@@ -316,13 +314,13 @@ inferTypeExpr exp =
          return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
 
       PtrDeRef id1 id2  -> do
-             Pointer structName supertypes <- lookupVar id1
-             Just (Struct name fields) <- CMR.asks (M.lookup structName . structs)
+             Pointer structName <- lookupVar id1
+             Just fields <- CMR.asks (M.lookup structName . structs)
              case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                Nothing -> fail "Trying to reference a field that doesn't exists."
                Just t' -> return $ ETyped exp t'
 
-      ENull id  -> return (ETyped NullC (Pointer id []))
+      ENull id  -> return (ETyped NullC (Pointer id))
 
       EString s        -> return $ ETyped exp String
 
@@ -332,8 +330,7 @@ inferTypeExpr exp =
            return $ ETyped (EApp id typedArgs) ret_type
 
       MApp (Ident id) obj args ->
-        do (ETyped _ (Pointer (Ident strName) _)) <- inferTypeExpr obj
-           let methodClass = Ident $ strName ++ "." ++ id
+        do (ETyped _ (Object className superT)) <- inferTypeExpr obj
            (args_type, ret_type) <- lookupFun methodClass
            typedArgs <- checkArgs methodClass args_type (obj : args)
            return $ ETyped (EApp methodClass typedArgs) ret_type
