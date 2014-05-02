@@ -24,9 +24,6 @@ data StateEnv  = SEnv { sugarVar  :: Int
                
 type Pointers = Map Ident Ident
 
--- Class name - supertypes - attributes - methods
-type Classes = Map Ident ([Ident], [SField], FnDef)
-
 type Desugar a = CMR.ReaderT ReadEnv (CMS.StateT StateEnv Err) a
 
 
@@ -64,7 +61,7 @@ splitDefinitions defs =
         TopTypeDecl def@(ClassDef _ _ _ _) -> (s, p, def:c, f)
 
 -- | Desugar a program without typechecking.
-desugar:: Program -> Err (Structs, [FnDef])
+desugar:: Program -> Err (Structs, Classes, [FnDef])
 desugar (Prog defs) = do
   let (s, p, c, f)   = splitDefinitions defs
   (structs,pointers)  <- checkStructs p s
@@ -83,8 +80,7 @@ desugar (Prog defs) = do
                                          (functionsTL ++ methodsTL))
                          initialREnv)
                         initialSEnv
-
-  return (structs, desugaredTopLevel)
+  return (structs, classes, desugaredTopLevel)
 
 -- | Check top level struct declaration against pointer declaration,
 --   checking for name clashes. Also check that Classes do not clash
@@ -152,7 +148,7 @@ checkClasses classDef =
                                   , show className
                                   , "already defined."]
          Nothing ->
-           do (superT,parentAttr, parentMethods) <-
+           do (superT, parentAttr, parentMethods) <-
                 case hierarchy of
                   HEmpty -> return ([],[],[])
                   HExtend parent ->
@@ -165,23 +161,22 @@ checkClasses classDef =
 
               attr <-
                 foldM
-                (\f (StrField t id) ->
+                (\fields (StrField t id) ->
                    case t of
                      Ref name ->
                        if name == className then
-                         return (f ++ [StrField (Object name superT) id])
+                         return (fields ++ [StrField (Object name superT) id])
                        else
                          case M.lookup name classes of
                            Nothing      -> fail $ concat [ "Class "
                                                , show name
                                                , "not defined."]
                            Just (superT,_,_) ->
-                             return $ f ++ [StrField (Object name superT) id]
-                     _ ->  return  $ f ++ [StrField t id]
-                ) [] (L.union parentAttr attr)
+                             return $ fields ++ [StrField (Object name superT) id]
+                     _ ->  return  $ fields ++ [StrField t id]
+                ) [] attr
 
-              let methds = L.unionBy fnEq classMethods parentMethods
-                  desugaredMethods =
+              let desugaredMethods =
                     map (\(FunDef type' (Ident id) args block) ->
                            (Just $ map (\(StrField t id) -> id) attr
 
@@ -193,12 +188,13 @@ checkClasses classDef =
                                                 
               return (M.insert className ( superT
                                     , attr
-                                    , methds)
+                                    , classMethods)
                       classes
                      , methods ++ desugaredMethods)
     ) (M.empty, []) classDef 
   where
     fnEq (FunDef _ id1 _ _) (FunDef _ id2 _ _) = id1 == id2 
+
 -- | Desugar a function definition.
 desugarFnDef :: Maybe [Ident] -> FnDef -> Desugar FnDef
 desugarFnDef Nothing (FunDef type' id args block) =
