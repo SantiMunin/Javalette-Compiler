@@ -11,10 +11,10 @@ import           Control.Monad        (foldM, liftM, liftM2, liftM3)
 import           Control.Applicative  ((<$>))
 
 import           Data.Map             (Map)
-import qualified Data.Map             as M (empty, insert, lookup, map,
-                                            mapWithKey, toList, union, fromList, foldl)
+import qualified Data.Map             as M (empty, insert, lookup,
+                                            toList, fromList)
 
-import qualified Data.List            as L (delete, union, unionBy)
+import qualified Data.List            as L (delete, union)
 
 data ReadEnv   = REnv { pointers  :: Pointers
                       , classes   :: Classes }
@@ -360,7 +360,7 @@ desugarExpr expr =
            Pointer name   -> return (ENull name)
            Object  name _ -> return (ENull name)
 
-    EApp id@(Ident name) exprs  ->
+    EApp id exprs  ->
       liftM (EApp id) $ mapM desugarExpr exprs
 
     ERel expr1 relop expr2  -> do

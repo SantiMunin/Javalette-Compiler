@@ -7,10 +7,8 @@ import           Javalette.ErrM
 
 import           Data.Map             (Map)
 import qualified Data.Map             as M
-import qualified Data.Set             as S
 import           Data.Maybe           (catMaybes)
 
-import           Control.Monad        (forM, unless, zipWithM_)
 import           Control.Monad.Reader as CMR
 import           Control.Monad.State  as CMS
 import           Control.Applicative ((<$>))
@@ -56,12 +54,6 @@ createVarIfNotExists id t = do
     Just _    -> fail $ concat [ "Variable "
                               , show id
                               , " already defined." ]
-
--- | Deletes a variable.
-deleteVar :: Ident -> TypeCheck ()
-deleteVar id = do
-  top:rest <- CMS.gets context
-  CMS.modify (\env -> env { context =  M.delete id top: rest })
 
 -- | Creates a new context for variables.
 newBlock :: TypeCheck ()
@@ -174,7 +166,6 @@ typeCheckLVal lval =
                       DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
                       t'           -> t'
          return $ LValTyped (LValVar ident typedAddrExpr) dimT
-
     LValStr name field ->
       do t <- lookupVar name
          case t of
@@ -188,7 +179,7 @@ typeCheckLVal lval =
                       Nothing ->
                         fail "Trying to reference a field that doesn't exist"
                       Just t' -> return $ LValTyped lval t'
-           Object className superT -> 
+           Object className _ -> 
              do classes <- CMR.asks classes
                 case M.lookup className classes of
                   Nothing -> fail $ "Class " ++ show className ++ " not defined."
@@ -199,6 +190,7 @@ typeCheckLVal lval =
                         fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
                       Just t' -> return $ LValTyped lval t'
            _ -> error $ "Variable " ++ show name ++ " must be a pointer."
+    _ -> error $ "Unexpected value in typeCheck"
 
 
 -- | Typechecks the validity of a given statement.
@@ -219,8 +211,8 @@ typeCheckStmt funType stm =
                  zip (map getIdent items) (repeat t)
            return (False, Decl t typedItems)
         where
-          checkItem t (NoInit id)   = return Nothing
-          checkItem t (Init id exp) = do
+          checkItem _ (NoInit _)   = return Nothing
+          checkItem t (Init _ exp) = do
                typedExpr <- checkTypeExpr t exp
                return $ Just typedExpr
           typeItem (NoInit id) Nothing = NoInit id
@@ -287,7 +279,7 @@ typeCheckStmt funType stm =
 (=~=) (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
 (=~=) (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
 (=~=) t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
-(=~=) (Object className superT) (Object className2 superT2) = className2 `elem` className:superT
+(=~=) (Object className superT) (Object className2 _) = className2 `elem` className:superT
 (=~=) t1 t2 = t1 == t2
 
 -- | Checks the type of an expresion in the given environment.
@@ -309,8 +301,8 @@ inferTypeExpr exp =
   case exp of
       ELitTrue         -> return $ ETyped exp Bool
       ELitFalse        -> return $ ETyped exp Bool
-      ELitInt n        -> return $ ETyped exp Int
-      ELitDoub d       -> return $ ETyped exp Doub
+      ELitInt _        -> return $ ETyped exp Int
+      ELitDoub _       -> return $ ETyped exp Doub
 
       Var id eDims     -> do
         t <- lookupVar id
@@ -321,7 +313,7 @@ inferTypeExpr exp =
         return $ ETyped (Var id typedEDims) tExpr
 
       Method (Var id eDims) (Var (Ident "length") []) -> do
-        (DimT t ndims) <- lookupVar id
+        (DimT _ ndims) <- lookupVar id
         when ((fromIntegral . length) eDims > ndims)
                $ fail "Indexing failure: Too many dimensions"
         typedEDims <- mapM (checkTypeDimA Int) eDims
@@ -334,9 +326,9 @@ inferTypeExpr exp =
        -- New object in the heap.
        if null eDims then
          case t of
-           Pointer structName ->
+           Pointer _ ->
              return (ETyped exp t)
-           Object  className superT ->
+           Object  _ _ ->
              return (ETyped exp t)
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        -- New array of type t
@@ -354,7 +346,7 @@ inferTypeExpr exp =
                    case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                      Nothing -> fail "Trying to reference a field that doesn't exists."
                      Just t' -> return $ ETyped exp t'
-                  Object className superT -> do 
+                  Object className _ -> do 
                     Just (ClassInfo _ _ fields _) <- CMR.asks (M.lookup className . classes)
                     case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                        Nothing -> fail "Trying to reference a field that doesn't exists."
@@ -370,7 +362,7 @@ inferTypeExpr exp =
                                 return (ETyped NullC (Pointer id))
                               else fail $ show id ++ " is not a nullable type." 
 
-      EString s        -> return $ ETyped exp String
+      EString _        -> return $ ETyped exp String
 
       EApp id args     ->
         do fun <- lookupFun id

@@ -27,8 +27,7 @@ data Ty = I32
         | ArrayT Ty Integer
         | Def Id
         | F Ty [Ty]
-        | Str [(Id,Ty)]
-          
+
 instance Show Ty where
   show I32 = "i32"
   show I64 = "i64"
@@ -77,9 +76,10 @@ data Operand = Const { const :: Constant }
              | Emp
                
 instance Show Operand where
-  show (Const c) = show c
-  show (Reg   r) = show r
+  show (Const c)  = show c
+  show (Reg   r)  = show r
   show (Global s) = "@" ++ s
+  show Emp        = ""
 
 
 -- | A nonterminator operation is just any operation which does not 
@@ -248,9 +248,6 @@ instance Show NonTerminator where
       isD D   = "f"
       isD I32 = ""
       showArgs = map (\(t, v) -> show t ++ " " ++ show v) 
-      cmp t cond = case t of
-                       I32 -> "icmp " ++ cond ++ " "
-                       D   -> "fcmp " ++ cond ++ " " 
 
 -- | A terminator is a instruction that can terminate a 
 -- function or block (i.e. returns, jumps).

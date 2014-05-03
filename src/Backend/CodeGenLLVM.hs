@@ -200,8 +200,9 @@ toPrimTy t = case t of
                DimT ty 0  -> toPrimTy ty
                DimT ty n  -> ArrayT (toPrimTy ty) n
                Pointer (Ident id)  -> Ptr (Def id)
-               Object (Ident name) objtype -> Ptr (Def name) 
+               Object (Ident name) _ -> Ptr (Def name) 
                String     -> Ptr I8
+
 -- | Creates a new label.
 freshLabel :: GenCode Label
 freshLabel = do
