@@ -2,7 +2,7 @@
 -- to make sure we are generating correct programs.
 module Backend.LLVM where
 
-import Data.List (intercalate, intersperse)
+import Data.List (intercalate)
 
 -- | A label can be either a number or a string. 
 -- The numbers will be displayed as "lab" ++ n.
