@@ -1,5 +1,10 @@
-all:
+all: wall
+
+normal:
 	ghc --make -O2 Jlc.hs -o Jlc
+	cp executable ../jlc
+wall:	
+	ghc -Wall --make -O2 Jlc.hs -o Jlc
 	cp executable ../jlc
 bnfc:
 	bnfc -d Javalette.cf
