@@ -101,12 +101,13 @@ checkFuns functions =
               Nothing ->
                 do let argTypes = map (\(Argument t _) -> t) args
                    return $ M.insert id (argTypes, ret_t) m
-      (MethodDef ret_t id obj args _) ->
-         do case M.lookup id m of
-              Just  _ -> fail $ "Method " ++ show id ++ " defined twice."
+      (MethodDef ret_t (Ident class') (Ident id) obj args _) ->
+         do let completeName = (Ident $ class' ++ "." ++ id)
+            case M.lookup completeName m of
+              Just  _ -> fail $ "Method " ++ class' ++ "." ++ id ++ " defined twice."
               Nothing ->
                 do let argTypes = map (\(Argument t _) -> t) (obj:args)
-                   return $ M.insert id (argTypes, ret_t) m
+                   return $ M.insert completeName (argTypes, ret_t) m
               
   ) M.empty (initializeDefs ++ functions)
 
@@ -150,39 +151,30 @@ typeCheckFun (FunDef ret_t id args (SBlock stmts)) = do
   removeBlock
   return $ FunDef ret_t id args typedStmts
 
-typeCheckFun (MethodDef ret_t id obj args (SBlock stmts)) =
+typeCheckFun (MethodDef ret_t class' id obj args (SBlock stmts)) =
   do newBlock
      mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) (obj:args)
      (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t (BStmt (SBlock stmts))
      unless (has_ret || (=~=) ret_t Void)
-             $ fail $ "Missing return statement in function " ++ show id
+             $ fail $ "Missing return statement in method " ++ show id
      removeBlock
-     return $ MethodDef ret_t id obj args typedStmts
+     return $ MethodDef ret_t class' id obj args typedStmts
 
--- Casts a dimension addressing to an expression.
-dimToExpr :: DimA -> Expr
-dimToExpr (DimAddr e) = e
+-- | Checktype a DimA
+checkTypeDimA :: Type -> DimA -> TypeCheck DimA
+checkTypeDimA type' (DimAddr e) = fmap DimAddr $ checkTypeExpr type' e
 
--- Casts a dimension addressing list to an
--- expression list.
-dimsToExprs :: [DimA] -> [Expr]
-dimsToExprs = map dimToExpr
-
--- | Casts an expressions list to a list of
--- dimension addressings.
-exprsToDims :: [Expr] -> [DimA]
-exprsToDims = map DimAddr
-
+-- | Typecheck an LVal
 typeCheckLVal :: LVal -> TypeCheck LVal
 typeCheckLVal lval =
   case lval of
     LValVar ident ndims ->
-      do typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
+      do typedAddrExpr   <- mapM (checkTypeDimA Int) ndims
          t               <- lookupVar ident
          let dimT = case t of
                       DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
                       t'           -> t'
-         return $ LValTyped (LValVar ident (exprsToDims typedAddrExpr)) dimT
+         return $ LValTyped (LValVar ident typedAddrExpr) dimT
 
     LValStr name field ->
       do t <- lookupVar name
@@ -323,19 +315,19 @@ inferTypeExpr exp =
 
       Var id eDims     -> do
         t <- lookupVar id
-        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+        typedEDims <- mapM (checkTypeDimA Int) eDims
         let tExpr = case t of
                       DimT t' dims -> DimT t' (dims - fromIntegral (length eDims))
                       _            -> t
-        return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
+        return $ ETyped (Var id typedEDims) tExpr
 
       Method (Var id eDims) (Var (Ident "length") []) -> do
         (DimT t ndims) <- lookupVar id
         when ((fromIntegral . length) eDims > ndims)
                $ fail "Indexing failure: Too many dimensions"
-        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+        typedEDims <- mapM (checkTypeDimA Int) eDims
         return (ETyped (Method (Var id
-                        (exprsToDims typedEDims)) (Var (Ident "length") [])) Int)
+                        typedEDims) (Var (Ident "length") [])) Int)
 
       Method _ _ -> fail $ "Bad method invocation: " ++ show exp
 
@@ -351,9 +343,9 @@ inferTypeExpr exp =
        -- New array of type t
        else do
          let ndims = fromIntegral $ length eDims
-         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+         typedEDims <- mapM (checkTypeDimA Int) eDims
          checkValidArrayType t
-         return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
+         return (ETyped (ENew t typedEDims) (DimT t ndims))
 
       PtrDeRef id1 id2  -> do
              deref <- lookupVar id1

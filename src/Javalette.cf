@@ -11,7 +11,7 @@ TopFnDef.    TopDef ::= FnDef;
 FunDef.      FnDef  ::= Type Ident "(" [Arg] ")" Block ;
 
 -- Method
-internal MethodDef. FnDef   ::= Type Ident Arg [Arg] Block;
+internal MethodDef. FnDef   ::= Type Ident Ident Arg [Arg] Block;
 
 -- Type Declaration
 TopTypeDecl. TopDef ::= TypeDecl;

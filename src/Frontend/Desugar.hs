@@ -157,7 +157,7 @@ checkClasses classDef =
   do classesInfo <- findClassesInfo
      foldM
       (\classes
-        (ClassDef className@(Ident class') hierarchy attr classMethods) ->
+        (ClassDef className hierarchy attr classMethods) ->
          case M.lookup className classes of
            Just _  -> fail $ concat ["Class name "
                                     , show className
@@ -192,10 +192,11 @@ checkClasses classDef =
                   ) [] attr
                 
                 let methods =
-                      map (\(FunDef type' (Ident id) args block) ->
+                      map (\(FunDef type' name args block) ->
                              MethodDef
                                 type'
-                                (Ident $ class'  ++ "." ++ id)
+                                className
+                                name
                                 (Argument (Object className superT) (Ident "self"))
                                 args
                                 block) classMethods
@@ -229,14 +230,14 @@ desugarFunDef (FunDef type' id args block) =
 
 -- | Desugar a Method definition.
 desugarMethodDef :: [Ident] -> FnDef -> Desugar FnDef
-desugarMethodDef classAttr (MethodDef type' id obj args block) =
+desugarMethodDef classAttr (MethodDef type' name id obj args block) =
   do
     newClassAttr classAttr
     desugaredType  <- desugarType type'
     desugaredArgs  <- mapM desugarArg args
     desugaredBlock <- desugarBlock block
     emptyClassAttr
-    return (MethodDef desugaredType id obj desugaredArgs desugaredBlock)
+    return (MethodDef desugaredType name id obj desugaredArgs desugaredBlock)
 
   
 -- | Desgugar an Argument.
