@@ -7,8 +7,8 @@ import           Internal.Types
 
 import qualified Control.Monad.Reader as CMR (ReaderT, asks, runReaderT)
 import qualified Control.Monad.State  as CMS (StateT, evalStateT, gets, modify)
-
 import           Control.Monad        (foldM, liftM, liftM2, liftM3)
+import           Control.Applicative  ((<$>))
 
 import           Data.Map             (Map)
 import qualified Data.Map             as M (empty, insert, lookup, map,

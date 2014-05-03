@@ -1,5 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
 -- | Implements a type checker for the Javalette language.
 module Frontend.TypeCheck (typecheck) where
 
@@ -15,6 +13,7 @@ import           Data.Maybe           (catMaybes)
 import           Control.Monad        (forM, unless, zipWithM_)
 import           Control.Monad.Reader as CMR
 import           Control.Monad.State  as CMS
+import           Control.Applicative ((<$>))
 
 
 -- | An environment is a pair containing information about functions
@@ -96,13 +95,13 @@ checkFuns functions =
   foldM (\m topLevel -> 
     case topLevel of
       (FunDef ret_t id args _ ) ->
-         do case M.lookup id m of
-              Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
-              Nothing ->
-                do let argTypes = map (\(Argument t _) -> t) args
-                   return $ M.insert id (argTypes, ret_t) m
+         case M.lookup id m of
+           Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
+           Nothing ->
+             let argTypes = map (\(Argument t _) -> t) args
+             in return $ M.insert id (argTypes, ret_t) m
       (MethodDef ret_t (Ident class') (Ident id) obj args _) ->
-         do let completeName = (Ident $ class' ++ "." ++ id)
+         do let completeName = Ident $ class' ++ "." ++ id
             case M.lookup completeName m of
               Just  _ -> fail $ "Method " ++ class' ++ "." ++ id ++ " defined twice."
               Nothing ->
@@ -162,7 +161,7 @@ typeCheckFun (MethodDef ret_t class' id obj args (SBlock stmts)) =
 
 -- | Checktype a DimA
 checkTypeDimA :: Type -> DimA -> TypeCheck DimA
-checkTypeDimA type' (DimAddr e) = fmap DimAddr $ checkTypeExpr type' e
+checkTypeDimA type' (DimAddr e) = DimAddr <$> checkTypeExpr type' e
 
 -- | Typecheck an LVal
 typeCheckLVal :: LVal -> TypeCheck LVal
@@ -184,21 +183,21 @@ typeCheckLVal lval =
                 case M.lookup strName structs of
                   Nothing -> fail $ "Struct " ++ show strName ++ " not defined."
                   Just fields ->
-                    do case lookup field . map (\(StrField t id) -> (id,t))
-                              $ fields of
-                         Nothing ->
-                           fail "Trying to reference a field that doesn't exist"
-                         Just t' -> return $ LValTyped lval t'
+                    case lookup field . map (\(StrField t id) -> (id,t))
+                          $ fields of
+                      Nothing ->
+                        fail "Trying to reference a field that doesn't exist"
+                      Just t' -> return $ LValTyped lval t'
            Object className superT -> 
              do classes <- CMR.asks classes
                 case M.lookup className classes of
                   Nothing -> fail $ "Class " ++ show className ++ " not defined."
-                  Just (_ , (_,fields), _) -> 
-                    do case lookup field . map (\(StrField t id) -> (id,t))
-                              $ fields of
-                         Nothing ->
-                           fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
-                         Just t' -> return $ LValTyped lval t'
+                  Just (ClassInfo _  _ fields _) -> 
+                    case lookup field . map (\(StrField t id) -> (id,t))
+                           $ fields of
+                      Nothing ->
+                        fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
+                      Just t' -> return $ LValTyped lval t'
            _ -> error $ "Variable " ++ show name ++ " must be a pointer."
 
 
@@ -280,7 +279,7 @@ typeCheckStmt funType stm =
       SExp exp -> inferTypeExpr exp >>=
                   (\typedExpr -> return (False, SExp typedExpr))
 
-      For _ _ _ -> fail "The expression should be already desugared."
+      For { } -> fail "The expression should be already desugared."
 
 
 -- | Calculate type equality with dimensional check.
@@ -295,7 +294,7 @@ typeCheckStmt funType stm =
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
 checkTypeExpr t exp = do
   typedExpr@(ETyped _ expt') <- inferTypeExpr exp
-  when (not $ expt' =~= t) $
+  unless (expt' =~= t) $
        fail $ concat ["Expresion "
                      , show exp
                      , " has not type "
@@ -356,16 +355,16 @@ inferTypeExpr exp =
                      Nothing -> fail "Trying to reference a field that doesn't exists."
                      Just t' -> return $ ETyped exp t'
                   Object className superT -> do 
-                    Just (_, (_,fields), _) <- CMR.asks (M.lookup className . classes)
+                    Just (ClassInfo _ _ fields _) <- CMR.asks (M.lookup className . classes)
                     case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                        Nothing -> fail "Trying to reference a field that doesn't exists."
                        Just t' -> return $ ETyped exp t'
-                  _ -> fail $ "Trying to dereference a primitive type"
+                  _ -> fail "Trying to dereference a primitive type"
 
       ENull id  -> 
         do classes <- CMR.asks classes 
            case M.lookup id classes of
-                Just (superT, _, _) -> return (ETyped NullC (Object id superT))
+                Just (ClassInfo superT _ _ _) -> return (ETyped NullC (Object id superT))
                 Nothing -> do structs <- CMR.asks structs
                               if M.member id structs then
                                 return (ETyped NullC (Pointer id))

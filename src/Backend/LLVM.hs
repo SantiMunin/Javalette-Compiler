@@ -353,13 +353,13 @@ instance Show TopLevel where
            , " @"
            , name
            , "("
-           , concat . intersperse "," . map show $ argTypes
+           , intercalate "," . map show $ argTypes
            , ")" ]
   show (TypeDecl name typeList) =
     concat [ "%"
            , name
            , " = type {"
-           , concat . intersperse "," . map show $ typeList
+           , intercalate "," . map show $ typeList
            , "}" ]
   show (GlobalDecl ty name fields) =
     concat [ "@"
