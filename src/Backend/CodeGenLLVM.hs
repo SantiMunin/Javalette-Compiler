@@ -14,7 +14,7 @@ import qualified Control.Monad.State    as CMS
 
 import           Data.List              (elemIndex, intersperse, intercalate)
 import qualified Data.Map               as M
-import           Data.Maybe             (fromJust)
+import           Data.Maybe             (fromJust, listToMaybe)
 
 import           Data.Hashable
 
@@ -95,36 +95,40 @@ genCode str (structs, classes, defs) = do
                             , [TypeDecl className $ Ptr (Def "ClassDescriptor"):map (toPrimTy . (\(StrField t _) -> t)) (parentFields ++ fields)] 
                             , genClassDescriptor className superT methods ]
               ) [] classes
-            where genClassDescriptor className parent methods = 
-                    [GlobalDecl (Def "ClassDescriptor") ("ClassDescriptor." ++ className) 
-                      [(Ptr (Def "ClassDescriptor"), getParent parent)
-                      , (Ptr (Def "ClassMethod"), getMethod methods)]]
-                    ++ genMethodChain methods
-                  getParent [] = Const Null 
-                  getParent ((Ident x):_) = Global $ "ClassDescriptor." ++ x
-                  getMethod [] = Const Null
-                  getMethod ((MethodDef _ (Ident mName) _ _ _):_) = 
-                    Global ("ClassMethod." ++ mName)
-                  genMethodChain [] = []
-                  genMethodChain [method] = [genMethodEntry  method Nothing]
-                  genMethodChain (method:tail@((MethodDef _ (Ident next) _ _ _):_)) = genMethodChain tail ++ [genMethodEntry method (Just next)]
-                  genMethodEntry (MethodDef ret_type (Ident mName) obj args _) next =
-                    GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ mName)
-                                 [(I64, Const $ CI64 $ fromIntegral $ (hash ((tail . dropWhile (/='.')) mName))), 
-                                  (Ptr (Def "ClassMethod")
-                                  , case next of 
-                                      Nothing -> Const Null 
-                                      Just x -> Global $ ("ClassMethod."++x)),
-                                  ( Ptr I8
-                                  , Const (LitCode $
-                                           concat ["bitcast ("
-                                                  ,show (toPrimTy ret_type)
-                                                  , " ("
-                                                  , intercalate "," $ "i8*" : map
-                                                   (show . toPrimTy . (\(Argument t _) -> t)) args
-                                                  , ")* @"
-                                                  , mName
-                                                  , " to i8*)"]))]
+
+-- | Generates the descriptor of a class. It has to point to the parent class 
+-- descriptor and to a linked list of methods of the class (the inherited are not included).
+genClassDescriptor :: String -> [Ident] -> [FnDef] -> [TopLevel]
+genClassDescriptor className parents methods = 
+                    [ GlobalDecl (Def "ClassDescriptor") ("ClassDescriptor." ++ className) 
+                    [ (Ptr (Def "ClassDescriptor"), getParent parents)
+                    , (Ptr (Def "ClassMethod"), getMethod methods)]
+                    ] ++ genMethodChain methods
+  where
+       getParent list = maybe (Const Null) (\(Ident x) -> Global $ "ClassDescriptor." ++ x) $ listToMaybe list
+       getMethod list = maybe (Const Null) (\(MethodDef _ (Ident className) (Ident mName) _ _ _) -> Global ("ClassMethod." ++ className ++ "." ++ mName)) $ listToMaybe list
+       
+       genMethodChain [] = []
+       genMethodChain [method] = [genMethodEntry method Nothing]
+       genMethodChain (method:tail@((MethodDef _ _ (Ident next) _ _ _):_)) = genMethodChain tail ++ [genMethodEntry method (Just next)]
+       
+       genMethodEntry (MethodDef ret_type (Ident className) (Ident mName) obj args _) next = 
+          GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ fullName)
+          [ (I64, Const $ CI64 $ fromIntegral $ hash mName)
+          , (Ptr (Def "ClassMethod")
+          , case next of
+              Nothing -> Const Null 
+              Just x -> Global $ ("ClassMethod." ++ className ++ "." ++ x))
+          , ( Ptr I8, Const (LitCode $ concat [ "bitcast ("
+          , show (toPrimTy ret_type)
+          , " ("
+          , intercalate "," $ "i8*" : map (show . toPrimTy . (\(Argument t _) -> t)) args
+          , ")* @"
+          , fullName
+          , " to i8*)" ]) )
+          ]
+          where
+            fullName = className ++ "." ++ mName
 
 
 
@@ -238,7 +242,7 @@ genCodeFunction (FunDef t (Ident id) args block) = do
   instr <- CMS.gets code
   return $ mkFun id (toPrimTy t) (toPrimArgs args) (reverse instr)
 
-genCodeFunction (MethodDef t (Ident id) (Argument objType _) args block) = do
+genCodeFunction (MethodDef t (Ident className) (Ident id) (Argument objType _) args block) = do
   newFunction  
   addr <- freshVar (Ident "self") objType
   emit $ NonTerm (IAlloc (toPrimTy objType)) (Just addr)
@@ -252,7 +256,7 @@ genCodeFunction (MethodDef t (Ident id) (Argument objType _) args block) = do
   genCodeBlock block
   when (t == Void) (emit (Term IVRet))
   instr <- CMS.gets code
-  return $ mkFun id (toPrimTy t) (("self", Ptr I8):toPrimArgs args) (reverse instr)
+  return $ mkFun (className ++ "." ++ id) (toPrimTy t) (("self", Ptr I8):toPrimArgs args) (reverse instr)
 
 -- | Translates a list of args to a more suitable type.
 toPrimArgs :: [Arg] -> [(Id, Ty)]
@@ -886,6 +890,7 @@ genCodeExpr (ETyped expr t) = case expr of
     ty = toPrimTy t
 
 
+-- | Finds the address of an indexed element in an array.
 findArrIndex :: Ty -> Register -> [DimA] -> GenCode Register
 findArrIndex ty@(ArrayT ty' nDim) addr index = do
     debugger "findArrIndex"
