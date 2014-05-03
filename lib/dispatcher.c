@@ -2,11 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/*typedef struct ClassMethod* ClassMethod;
+typedef struct ClassMethod* ClassMethod;
 
 struct ClassMethod {
+  long   tag;
   ClassMethod next;
-  int   tag;
   void* method;
 };
 
@@ -16,26 +16,26 @@ struct ClassDescriptor {
   ClassDescriptor parent;
   ClassMethod      entries;
 };
-*/
 
-void* SEARCH_METHOD(ClassMethod entry,int tag) {
+
+void* search_method(ClassMethod entry, long tag) {
   if (entry == NULL) 
     return NULL;
   
   if (entry->tag == tag)
     return (entry->method);
   
-  return SEARCH_METHOD(entry->next, tag);
+  return search_method(entry->next, tag);
 }
 
 
-void* DISTPATCH(ClassDescriptor descr, int tag){
-  void* entry = SEARCH_METHOD(descr->entries, tag);  
+void* dispatcher(long tag, ClassDescriptor descr){
+  void* entry = search_method(descr->entries, tag);  
   if (descr==NULL && entry==NULL)
     exit(EXIT_FAILURE);
 
   if (entry==NULL)
-    return DISTPATCH(descr->parent,tag);
+    return dispatcher(tag,descr->parent);
   
   return entry;
 }

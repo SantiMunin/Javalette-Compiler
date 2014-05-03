@@ -55,8 +55,7 @@ separator nonempty Item "," ;
 Ass.       Stmt ::= LVal "=" Expr  ";" ;
 LValVar.   LVal ::= Ident [DimA]; 
 LValStr.   LVal ::= Ident "->" Ident;
-
-internal  LValTyped. LVal ::= "[" LVal ":" Type "]";
+internal LValTyped. LVal ::= "[" LVal ":" Type "]";
 
 Incr.      Stmt ::= LVal "++"  ";" ;
 
@@ -135,7 +134,6 @@ ELitFalse. Expr6 ::= "false" ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")";
 internal   MApp. Expr ::= "." Ident "(" Expr "," [Expr] ")" ;
-
 EString.   Expr6 ::= String ;
 
 Neg.       Expr5 ::= "-" Expr6 ;
