@@ -13,6 +13,7 @@ import           Control.Applicative    ((<$>))
 
 import           Data.List              (elemIndex, intercalate)
 import qualified Data.Map               as M
+import Data.Map (Map)
 import           Data.Maybe             (fromJust, listToMaybe)
 
 import           Data.Hashable
@@ -33,11 +34,12 @@ data Env = E { nextAddr  :: Int
              , globalvar :: Int
              , globalDef :: [String]
              , structs   :: M.Map Id [(Id,Ty)]
-             , classes   :: M.Map Id [(Id,Ty)] }
+             , classes   :: M.Map Id [(Id,Ty)]
+             , tags      :: Map Id Integer}
 
 -- | Creates an initial environment.
-initialEnv :: Structs -> Classes -> Env
-initialEnv structs classes =
+initialEnv :: Map Id Integer -> Structs -> Classes -> Env
+initialEnv tags structs classes =
   E { nextAddr  = 0
     , nextLabel = 0
     , localvar  = [M.empty]
@@ -53,7 +55,8 @@ initialEnv structs classes =
       M.foldWithKey
          (\(Ident id) (ClassInfo _ pF fields _) accum
             -> M.insert id (map (\(StrField type' (Ident field))
-                                   -> (field, toPrimTy type')) (pF ++ fields)) accum) M.empty classes }
+                                   -> (field, toPrimTy type')) (pF ++ fields)) accum) M.empty classes 
+  , tags = tags }
 -- | Definition of the code generator monad.
 type GenCode a = CMS.State Env a
 
@@ -77,7 +80,7 @@ headers = [ FunDecl V "printInt" [I32]
 -- | Main function, generates the program's LLVM code.
 genCode :: (Structs, Classes, [FnDef]) -> Err String
 genCode (structs, classes, defs) = do
-  let (funs,s) =  CMS.runState (mapM genCodeFunction defs) (initialEnv structs classes)
+  let (funs,s) =  CMS.runState (mapM genCodeFunction defs) (initialEnv tags structs classes)
   return $ concat [ unlines $ map show $ headers ++ userStructs ++ userClasses
                   , unlines (globalDef s)
                   , concatMap show funs ]
@@ -87,18 +90,27 @@ genCode (structs, classes, defs) = do
                   -> accum ++ [TypeDecl name $
                                map (toPrimTy . (\(StrField t _) -> t)) fields])
                [] structs
+                  
+          tags        =
+            fst $ foldl
+                (\(tags,next) (MethodDef _ _ (Ident id) _ _ _) ->
+                     case M.lookup id tags of
+                       Nothing -> (M.insert id next tags,next+1)
+                       Just _  -> (tags,next))
+             (M.empty,0) (concatMap snd . M.toList . M.map methods $ classes)
+                         
           userClasses = 
             M.foldWithKey
               (\(Ident className) (ClassInfo superT parentFields fields methods) classList
                   -> concat [ classList
                             , [TypeDecl className $ Ptr (Def "ClassDescriptor"):map (toPrimTy . (\(StrField t _) -> t)) (parentFields ++ fields)] 
-                            , genClassDescriptor className superT methods ]
+                            , genClassDescriptor tags className superT methods ]
               ) [] classes
 
 -- | Generates the descriptor of a class. It has to point to the parent class 
 -- descriptor and to a linked list of methods of the class (the inherited are not included).
-genClassDescriptor :: String -> [Ident] -> [FnDef] -> [TopLevel]
-genClassDescriptor className parents methods = 
+genClassDescriptor :: Map Id Integer -> String -> [Ident] -> [FnDef] -> [TopLevel]
+genClassDescriptor tags className parents methods = 
                     GlobalDecl (Def "ClassDescriptor") ("ClassDescriptor." ++ className) 
                     [ (Ptr (Def "ClassDescriptor"), getParent parents)
                     , (Ptr (Def "ClassMethod"), getMethod methods)]
@@ -113,7 +125,7 @@ genClassDescriptor className parents methods =
        
        genMethodEntry (MethodDef ret_type (Ident className) (Ident mName) _ args _) next = 
           GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ fullName)
-          [ (I64, Const $ CI64 $ fromIntegral $ hash mName)
+          [ (I64, Const $ CI64 $ (fromJust $ M.lookup mName tags))
           , (Ptr (Def "ClassMethod")
           , case next of
               Nothing -> Const Null 
@@ -752,14 +764,14 @@ genCodeExpr (ETyped expr t) = case expr of
               (Just classDescr)
 
        debugger "Get method from dispatcher"
-                
+
+       Just tag <- CMS.gets (M.lookup id . tags)
+                   
        methodPtr     <- freshLocal
        emit $ NonTerm (ICall (Ptr I8) "@dispatcher" [(I64
-                                                    , Const (CI32 .
-                                                             fromIntegral .
-                                                             hash $  id))
-                                                   ,(Ptr $ Def "ClassDescriptor"
-                                                    , Reg classDescr)])
+                                                     , Const (CI32 tag))
+                                                    ,(Ptr $ Def "ClassDescriptor"
+                                                     , Reg classDescr)])
               (Just methodPtr)
             
        debugger "Cast method to its actual type"
