@@ -67,7 +67,7 @@ main = do
                         when debug  (printErr (show str         ))
                         case backend of
                           "-llvm" ->
-                            case genCode name (str, classes, typedFnDefs) of
+                            case genCode (str, classes, typedFnDefs) of
                               Bad err ->
                                 do
                                   printErr "ERROR"

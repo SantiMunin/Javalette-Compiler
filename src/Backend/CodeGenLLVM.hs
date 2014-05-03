@@ -75,8 +75,8 @@ headers = [ FunDecl V "printInt" [I32]
           , TypeDecl "ClassMethod" [I64, Ptr (Def "ClassMethod"), Ptr I8]]
 
 -- | Main function, generates the program's LLVM code.
-genCode :: String -> (Structs, Classes, [FnDef]) -> Err String
-genCode str (structs, classes, defs) = do
+genCode :: (Structs, Classes, [FnDef]) -> Err String
+genCode (structs, classes, defs) = do
   let (funs,s) =  CMS.runState (mapM genCodeFunction defs) (initialEnv structs classes)
   return $ concat [ unlines $ map show $ headers ++ userStructs ++ userClasses
                   , unlines (globalDef s)
@@ -111,7 +111,7 @@ genClassDescriptor className parents methods =
        genMethodChain [method] = [genMethodEntry method Nothing]
        genMethodChain (method:tail@(MethodDef _ _ (Ident next) _ _ _:_)) = genMethodChain tail ++ [genMethodEntry method (Just next)]
        
-       genMethodEntry (MethodDef ret_type (Ident className) (Ident mName) obj args _) next = 
+       genMethodEntry (MethodDef ret_type (Ident className) (Ident mName) _ args _) next = 
           GlobalDecl (Def "ClassMethod") ("ClassMethod." ++ fullName)
           [ (I64, Const $ CI64 $ fromIntegral $ hash mName)
           , (Ptr (Def "ClassMethod")
@@ -226,7 +226,7 @@ newBlock = do
 -- | Exiting a block implies removing the top-most scope of variables.
 removeBlock :: GenCode ()
 removeBlock = do
-  (x:xs) <- CMS.gets localvar
+  (_:xs) <- CMS.gets localvar
   CMS.modify (\env -> env { localvar = xs })
 
 -- | Generates the code of a function.
@@ -277,7 +277,7 @@ genCodeItem rawtype (NoInit id)    = do
     Bool      -> emit $ NonTerm (IStore addr (Const (CI1 True)) t) Nothing
     DimT _ _  -> emit $ NonTerm (IStore addr (Const Undef)      t) Nothing
     Pointer _ -> emit $ NonTerm (IStore addr (Const Null)       t) Nothing
-    Object name _ -> emit $ NonTerm (IStore addr (Const Null) t) Nothing
+    Object _ _ -> emit $ NonTerm (IStore addr (Const Null) t) Nothing
     where
       t = toPrimTy rawtype
 
@@ -286,7 +286,7 @@ genCodeItem rawtype (Init id expr@(ETyped innerExpr innerType)) = do
   addr        <- freshVar id rawtype
   emit $ NonTerm (IAlloc ty) (Just addr)
   case ty of
-    Ptr (Def name) ->
+    Ptr (Def _) ->
       if innerExpr == NullC then
          emit $ NonTerm (IStore addr val ty) Nothing
       else
@@ -306,8 +306,8 @@ genCodeItem rawtype (Init id expr@(ETyped innerExpr innerType)) = do
 genCodeLVal :: LVal -> GenCode Register
 genCodeLVal lval  =
   case lval of
-    LValVar id exprDims -> 
-      do (addr,ty) <- lookUpVar id
+    LValVar id _ -> 
+      do (addr,_) <- lookUpVar id
          return addr
 
     LValStr var (Ident field) ->
@@ -400,7 +400,7 @@ genCodeStmt stmt = case stmt of
                               [(Ptr I8, Reg castArray2), (Ptr I8, Reg castArray1),
                                (I32, Reg sizeTotal)])
                            (Just dummy)       
-                Ptr (Def var)  ->
+                Ptr (Def _)  ->
                   if  innerExpr == NullC then
                     emit $ NonTerm (IStore addr value ty) Nothing
                   else
@@ -482,7 +482,7 @@ genCodeStmt stmt = case stmt of
     emit $ Label end
 
   SExp expr  -> void $ genCodeExpr expr
-  For idecl expr stmt  -> error "Error for not declared"
+  For {}     -> error "Error for not declared"
 
 -- | Generates the code of an expression.
 genCodeExpr :: Expr -> GenCode Operand
