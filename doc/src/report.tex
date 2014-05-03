@@ -1,0 +1,37 @@
+\documentclass{article}
+
+\begin{document}
+
+
+\section{Usage}
+The usage of the compiler is quite simple, to compile it go to the root of the project and execute \texttt{make -C src/}, then you just need to use the given script \texttt{./jlc <sourcefile>}.
+
+\section{Language specification}
+The language is specified using \texttt{BNFC}, just open the \texttt{Javalette.cf} file in order to check all the grammar rules of the language.
+
+\section{Shift/reduce conflicts}
+
+\section{Implemented extensions}
+
+We have implemented 5 extensions:
+
+\begin{itemize}
+  \item {\bf Arrays}
+  \item {\bf Multidimmensional arrays}
+  \item {\bf Structures}
+  \item {\bf Classes}
+  \item {\bf Classes 2 (with dynamic dispatch)}
+\end{itemize}
+
+\section{About the compiler}
+
+The compiler consists of the following pipeline:
+
+\begin{enumerate}
+ \item {\bf Lexer}: Generated with \texttt{BNFC}, this phase reads the source file and translate it into a set of tokens.
+ \item {\bf Desugarer}: Removes syntax-sugar such as for loops and structure/classes definitions.
+ \item {\bf Typechecker}: Checks the program is correct, and returns the typed program.
+ \item {\bf Code generator}: Using the typed program, generated the \texttt{LLVM} code necessary to run the program.
+\end{enumerate}
+
+\end{document}
