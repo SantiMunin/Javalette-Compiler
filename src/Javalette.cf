@@ -94,7 +94,7 @@ Ref.       Type ::= Ident;
 
 separator Type "";
 
-internal Pointer.   Type ::= Ident;
+internal Pointer.   Type ::= Ident "*";
 internal Object.    Type ::= Ident "[|" [Ident] "|]";
 
 separator Ident ":";
