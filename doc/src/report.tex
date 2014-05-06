@@ -11,17 +11,27 @@ The language is specified using \texttt{BNFC}, just open the \texttt{Javalette.c
 
 \section{Shift/reduce conflicts}
 
+\begin{itemize}
+  \item {\bf The dangling else problem}: Caused by the rules \texttt{Cond} and \texttt{CondElse}. With these we define that an \texttt{if} statement can optionally have an \texttt{else} branch. The problem is that the compiler does not know how to deal with constructions such as \texttt{if cond then if cond2 then st1 else st2} since it is impossible to know to which \texttt{if} belongs the \texttt{else}.
+\end{itemize}
+
 \section{Implemented extensions}
 
-We have implemented 5 extensions:
+We have implemented 5 extensions, which will be explaining within the following sections.
 
-\begin{itemize}
-  \item {\bf Arrays}
-  \item {\bf Multidimmensional arrays}
-  \item {\bf Structures}
-  \item {\bf Classes}
-  \item {\bf Classes 2 (with dynamic dispatch)}
-\end{itemize}
+\subsection{Arrays}
+
+This was the first extension implemented, which was modified during the development of the second one. The initial idea was to create a global structure (so the array can be passed by reference) which holded the address and size of the array (the type is not needed during runtime).
+\subsection{Multidimmensional arrays}
+
+We generalized the last extension extending the global structure by adding the number of dimensions and the length of each dimension. In this way, we don't need to allocate multimensional arrays using loops since we just use a 1-dimensional array which contains every dimension. Using a simple formula, we can address the correct element.
+
+    The main challenge here was the code generation, since although the structure is similar to the last extension, the assignment is a little bit tedious due to the adressing (and duplication/modification) of the fields of the structure. 
+\subsection{Structures}
+
+This was an interesing extension since it provided us with a good framework in order to implement the following ones. We had to add some rules to the grammar, and some types to the program since we need to keep track of the fields of each structure. Moreover, we need to keep track of the synonyms (defined through \texttt{typedef}). Once the program passes the type checker, then the code generation is quite straight-forward as LLVM provides structures without any workaround.
+\subsection{Classes}
+\subsection{Classes 2 (with dynamic dispatch)}
 
 \section{About the compiler}
 
@@ -33,5 +43,7 @@ The compiler consists of the following pipeline:
  \item {\bf Typechecker}: Checks the program is correct, and returns the typed program.
  \item {\bf Code generator}: Using the typed program, generated the \texttt{LLVM} code necessary to run the program.
 \end{enumerate}
+
+Each of these phases are implemented in a \texttt{Haskell} module with the same name (except the lexer which is implemented by \texttt{BNFC}). In addition to those files, we have implemented another module called \texttt{LLVM.hs} which defines a small framework to build LLVM programs, this adds an extra layer of type checking (it tries to prevent some mistakes while generating the code).
 
 \end{document}
