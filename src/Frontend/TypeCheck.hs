@@ -378,6 +378,12 @@ inferTypeExpr exp =
            (typedObj: typedArgs) <- checkArgs id args_type (obj : args)
            return $ ETyped (MApp id typedObj typedArgs) ret_type
 
+      -- Mod is defined only for integers
+      EMul exp1 Mod exp2 -> do
+        typedE1 <- checkTypeExpr Int exp1 
+        typedE2 <- checkTypeExpr Int exp2
+        return $ ETyped (EMul typedE1 Mod typedE2) Int
+      
       EMul exp1 op exp2  -> do
         typedE1@(ETyped _ t1)  <- inferTypeExpr exp1
         checkTypeNum t1
