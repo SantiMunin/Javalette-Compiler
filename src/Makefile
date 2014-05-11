@@ -1,4 +1,4 @@
-all: wall
+all: normal
 
 normal:
 	ghc --make -O2 Jlc.hs -o Jlc
