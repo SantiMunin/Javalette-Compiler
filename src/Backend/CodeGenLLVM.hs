@@ -16,7 +16,6 @@ import qualified Data.Map               as M
 import Data.Map (Map)
 import           Data.Maybe             (fromJust, listToMaybe)
 
-import           Data.Hashable
 
 -- | Debugging utils.
 debug  :: Bool
