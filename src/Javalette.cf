@@ -106,18 +106,18 @@ internal   String. Type ::= "String" ;
 internal DimT.   Type   ::= "[<" Type Integer ">]";
 -- Expressions ---------------------------------------------
 
-Var.        Expr6 ::= Ident [DimA] ;
+Var.        Expr7 ::= Ident [DimA] ;
 
-Method.     Expr6 ::= Expr6 "." Expr6;
+Method.     Expr6 ::= Expr6 "." Expr7;
 
 DimAddr.   DimA  ::= "[" Expr "]" ;
 
 separator  DimA "";
 
 -- Array initialization
-ENew.      Expr6 ::= "new" Type [DimA] ;
+ENew.      Expr7 ::= "new" Type [DimA] ;
 
-PtrDeRef.  Expr6 ::= Ident "->" Ident;
+PtrDeRef.  Expr7 ::= Ident "->" Ident;
 
 -- Shift-reduce
 ENull.     Expr6 ::= "(" Ident ")" "null";
@@ -132,7 +132,7 @@ ELitTrue.  Expr6 ::= "true" ;
 
 ELitFalse. Expr6 ::= "false" ;
 
-EApp.      Expr6 ::= Ident "(" [Expr] ")";
+EApp.      Expr7 ::= Ident "(" [Expr] ")";
 internal   MApp. Expr ::= "." Ident "(" Expr "," [Expr] ")" ;
 EString.   Expr6 ::= String ;
 
@@ -151,7 +151,7 @@ EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 EOr.       Expr ::= Expr1 "||" Expr ;
 
 
-coercions  Expr 6 ;
+coercions  Expr 7 ;
 
 separator  Expr "," ;
 
