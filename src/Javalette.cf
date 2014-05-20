@@ -119,7 +119,6 @@ ENew.      Expr7 ::= "new" Type [DimA] ;
 
 PtrDeRef.  Expr7 ::= Ident "->" Ident;
 
--- Shift-reduce
 internal ENull. Expr ::= Ident;
 internal NullC. Expr ::= "null";
 
@@ -152,11 +151,13 @@ EOr.       Expr ::= Expr1 "||" Expr ;
 
 coercions  Expr 6 ;
 
+-- Shift - reduce conflict, harmless now parses well (expr) and (ident) null.
 Co7.    Expr7 ::= "(" Expr6 ")" MaybeNull;
 Co6.    Expr6 ::= Expr7;
 
 MNull. MaybeNull    ::= "null";
 MNotNull. MaybeNull ::= ;
+
 separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]";
