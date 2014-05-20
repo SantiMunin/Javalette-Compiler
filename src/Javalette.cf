@@ -11,7 +11,7 @@ TopFnDef.    TopDef ::= FnDef;
 FunDef.      FnDef  ::= Type Ident "(" [Arg] ")" Block ;
 
 -- Method
-internal MethodDef. FnDef   ::= Type Ident Arg [Arg] Block;
+internal MethodDef. FnDef   ::= Type Ident Ident Arg [Arg] Block;
 
 -- Type Declaration
 TopTypeDecl. TopDef ::= TypeDecl;
@@ -55,8 +55,7 @@ separator nonempty Item "," ;
 Ass.       Stmt ::= LVal "=" Expr  ";" ;
 LValVar.   LVal ::= Ident [DimA]; 
 LValStr.   LVal ::= Ident "->" Ident;
-
-internal  LValTyped. LVal ::= "[" LVal ":" Type "]";
+internal LValTyped. LVal ::= "[" LVal ":" Type "]";
 
 Incr.      Stmt ::= LVal "++"  ";" ;
 
@@ -95,7 +94,7 @@ Ref.       Type ::= Ident;
 
 separator Type "";
 
-internal Pointer.   Type ::= Ident;
+internal Pointer.   Type ::= Ident "*";
 internal Object.    Type ::= Ident "[|" [Ident] "|]";
 
 separator Ident ":";
@@ -135,7 +134,6 @@ ELitFalse. Expr6 ::= "false" ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")";
 internal   MApp. Expr ::= "." Ident "(" Expr "," [Expr] ")" ;
-
 EString.   Expr6 ::= String ;
 
 Neg.       Expr5 ::= "-" Expr6 ;

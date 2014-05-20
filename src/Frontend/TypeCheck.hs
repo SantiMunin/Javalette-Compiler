@@ -1,5 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
 -- | Implements a type checker for the Javalette language.
 module Frontend.TypeCheck (typecheck) where
 
@@ -9,12 +7,11 @@ import           Javalette.ErrM
 
 import           Data.Map             (Map)
 import qualified Data.Map             as M
-import qualified Data.Set             as S
 import           Data.Maybe           (catMaybes)
 
-import           Control.Monad        (forM, unless, zipWithM_)
 import           Control.Monad.Reader as CMR
 import           Control.Monad.State  as CMS
+import           Control.Applicative ((<$>))
 
 
 -- | An environment is a pair containing information about functions
@@ -58,12 +55,6 @@ createVarIfNotExists id t = do
                               , show id
                               , " already defined." ]
 
--- | Deletes a variable.
-deleteVar :: Ident -> TypeCheck ()
-deleteVar id = do
-  top:rest <- CMS.gets context
-  CMS.modify (\env -> env { context =  M.delete id top: rest })
-
 -- | Creates a new context for variables.
 newBlock :: TypeCheck ()
 newBlock = CMS.modify (\env -> env {context =  M.empty : context env})
@@ -96,17 +87,18 @@ checkFuns functions =
   foldM (\m topLevel -> 
     case topLevel of
       (FunDef ret_t id args _ ) ->
-         do case M.lookup id m of
-              Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
-              Nothing ->
-                do let argTypes = map (\(Argument t _) -> t) args
-                   return $ M.insert id (argTypes, ret_t) m
-      (MethodDef ret_t id obj args _) ->
-         do case M.lookup id m of
-              Just  _ -> fail $ "Method " ++ show id ++ " defined twice."
+         case M.lookup id m of
+           Just  _ -> fail $ "Function " ++ show id ++ " defined twice."
+           Nothing ->
+             let argTypes = map (\(Argument t _) -> t) args
+             in return $ M.insert id (argTypes, ret_t) m
+      (MethodDef ret_t (Ident class') (Ident id) obj args _) ->
+         do let completeName = Ident $ class' ++ "." ++ id
+            case M.lookup completeName m of
+              Just  _ -> fail $ "Method " ++ class' ++ "." ++ id ++ " defined twice."
               Nothing ->
                 do let argTypes = map (\(Argument t _) -> t) (obj:args)
-                   return $ M.insert id (argTypes, ret_t) m
+                   return $ M.insert completeName (argTypes, ret_t) m
               
   ) M.empty (initializeDefs ++ functions)
 
@@ -150,40 +142,30 @@ typeCheckFun (FunDef ret_t id args (SBlock stmts)) = do
   removeBlock
   return $ FunDef ret_t id args typedStmts
 
-typeCheckFun (MethodDef ret_t id obj args (SBlock stmts)) =
+typeCheckFun (MethodDef ret_t class' id obj args (SBlock stmts)) =
   do newBlock
      mapM_ (\(Argument t idArg)  -> createVarIfNotExists idArg t) (obj:args)
      (has_ret, BStmt typedStmts) <- typeCheckStmt ret_t (BStmt (SBlock stmts))
      unless (has_ret || (=~=) ret_t Void)
-             $ fail $ "Missing return statement in function " ++ show id
+             $ fail $ "Missing return statement in method " ++ show id
      removeBlock
-     return $ MethodDef ret_t id obj args typedStmts
+     return $ MethodDef ret_t class' id obj args typedStmts
 
--- Casts a dimension addressing to an expression.
-dimToExpr :: DimA -> Expr
-dimToExpr (DimAddr e) = e
+-- | Checktype a DimA
+checkTypeDimA :: Type -> DimA -> TypeCheck DimA
+checkTypeDimA type' (DimAddr e) = DimAddr <$> checkTypeExpr type' e
 
--- Casts a dimension addressing list to an
--- expression list.
-dimsToExprs :: [DimA] -> [Expr]
-dimsToExprs = map dimToExpr
-
--- | Casts an expressions list to a list of
--- dimension addressings.
-exprsToDims :: [Expr] -> [DimA]
-exprsToDims = map DimAddr
-
+-- | Typecheck an LVal
 typeCheckLVal :: LVal -> TypeCheck LVal
 typeCheckLVal lval =
   case lval of
     LValVar ident ndims ->
-      do typedAddrExpr   <- mapM (checkTypeExpr Int) $ dimsToExprs ndims
+      do typedAddrExpr   <- mapM (checkTypeDimA Int) ndims
          t               <- lookupVar ident
          let dimT = case t of
                       DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
                       t'           -> t'
-         return $ LValTyped (LValVar ident (exprsToDims typedAddrExpr)) dimT
-
+         return $ LValTyped (LValVar ident typedAddrExpr) dimT
     LValStr name field ->
       do t <- lookupVar name
          case t of
@@ -192,22 +174,23 @@ typeCheckLVal lval =
                 case M.lookup strName structs of
                   Nothing -> fail $ "Struct " ++ show strName ++ " not defined."
                   Just fields ->
-                    do case lookup field . map (\(StrField t id) -> (id,t))
-                              $ fields of
-                         Nothing ->
-                           fail "Trying to reference a field that doesn't exist"
-                         Just t' -> return $ LValTyped lval t'
-           Object className superT -> 
+                    case lookup field . map (\(StrField t id) -> (id,t))
+                          $ fields of
+                      Nothing ->
+                        fail "Trying to reference a field that doesn't exist"
+                      Just t' -> return $ LValTyped lval t'
+           Object className _ -> 
              do classes <- CMR.asks classes
                 case M.lookup className classes of
                   Nothing -> fail $ "Class " ++ show className ++ " not defined."
-                  Just (_ , fields, _) -> 
-                    do case lookup field . map (\(StrField t id) -> (id,t))
-                              $ fields of
-                         Nothing ->
-                           fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
-                         Just t' -> return $ LValTyped lval t'
+                  Just (ClassInfo _  _ fields _) -> 
+                    case lookup field . map (\(StrField t id) -> (id,t))
+                           $ fields of
+                      Nothing ->
+                        fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
+                      Just t' -> return $ LValTyped lval t'
            _ -> error $ "Variable " ++ show name ++ " must be a pointer."
+    _ -> error $ "Unexpected value in typeCheck"
 
 
 -- | Typechecks the validity of a given statement.
@@ -228,8 +211,8 @@ typeCheckStmt funType stm =
                  zip (map getIdent items) (repeat t)
            return (False, Decl t typedItems)
         where
-          checkItem t (NoInit id)   = return Nothing
-          checkItem t (Init id exp) = do
+          checkItem _ (NoInit _)   = return Nothing
+          checkItem t (Init _ exp) = do
                typedExpr <- checkTypeExpr t exp
                return $ Just typedExpr
           typeItem (NoInit id) Nothing = NoInit id
@@ -288,7 +271,7 @@ typeCheckStmt funType stm =
       SExp exp -> inferTypeExpr exp >>=
                   (\typedExpr -> return (False, SExp typedExpr))
 
-      For _ _ _ -> fail "The expression should be already desugared."
+      For { } -> fail "The expression should be already desugared."
 
 
 -- | Calculate type equality with dimensional check.
@@ -296,14 +279,14 @@ typeCheckStmt funType stm =
 (=~=) (DimT t1 dim1) (DimT t2 dim2) =  t1 == t2 && dim1 == dim2
 (=~=) (DimT t1 dim1) t2             =  t1 == t2 && dim1 == 0
 (=~=) t1             (DimT t2 dim2) =  t1 == t2 && dim2 == 0
-(=~=) (Object className superT) (Object className2 superT2) = className2 `elem` className:superT
+(=~=) (Object className superT) (Object className2 _) = className2 `elem` className:superT
 (=~=) t1 t2 = t1 == t2
 
 -- | Checks the type of an expresion in the given environment.
 checkTypeExpr :: Type -> Expr -> TypeCheck Expr
 checkTypeExpr t exp = do
   typedExpr@(ETyped _ expt') <- inferTypeExpr exp
-  when (not $ expt' =~= t) $
+  unless (expt' =~= t) $
        fail $ concat ["Expresion "
                      , show exp
                      , " has not type "
@@ -318,24 +301,24 @@ inferTypeExpr exp =
   case exp of
       ELitTrue         -> return $ ETyped exp Bool
       ELitFalse        -> return $ ETyped exp Bool
-      ELitInt n        -> return $ ETyped exp Int
-      ELitDoub d       -> return $ ETyped exp Doub
+      ELitInt _        -> return $ ETyped exp Int
+      ELitDoub _       -> return $ ETyped exp Doub
 
       Var id eDims     -> do
         t <- lookupVar id
-        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+        typedEDims <- mapM (checkTypeDimA Int) eDims
         let tExpr = case t of
                       DimT t' dims -> DimT t' (dims - fromIntegral (length eDims))
                       _            -> t
-        return $ ETyped (Var id (exprsToDims typedEDims)) tExpr
+        return $ ETyped (Var id typedEDims) tExpr
 
       Method (Var id eDims) (Var (Ident "length") []) -> do
-        (DimT t ndims) <- lookupVar id
+        (DimT _ ndims) <- lookupVar id
         when ((fromIntegral . length) eDims > ndims)
                $ fail "Indexing failure: Too many dimensions"
-        typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+        typedEDims <- mapM (checkTypeDimA Int) eDims
         return (ETyped (Method (Var id
-                        (exprsToDims typedEDims)) (Var (Ident "length") [])) Int)
+                        typedEDims) (Var (Ident "length") [])) Int)
 
       Method _ _ -> fail $ "Bad method invocation: " ++ show exp
 
@@ -343,17 +326,17 @@ inferTypeExpr exp =
        -- New object in the heap.
        if null eDims then
          case t of
-           Pointer structName ->
+           Pointer _ ->
              return (ETyped exp t)
-           Object  className superT ->
+           Object  _ _ ->
              return (ETyped exp t)
            _ -> fail $ "Cannot create an object of a primitive type: " ++ show t
        -- New array of type t
        else do
          let ndims = fromIntegral $ length eDims
-         typedEDims <- mapM (checkTypeExpr Int) (dimsToExprs eDims)
+         typedEDims <- mapM (checkTypeDimA Int) eDims
          checkValidArrayType t
-         return (ETyped (ENew t (exprsToDims typedEDims)) (DimT t ndims))
+         return (ETyped (ENew t typedEDims) (DimT t ndims))
 
       PtrDeRef id1 id2  -> do
              deref <- lookupVar id1
@@ -363,23 +346,23 @@ inferTypeExpr exp =
                    case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                      Nothing -> fail "Trying to reference a field that doesn't exists."
                      Just t' -> return $ ETyped exp t'
-                  Object className superT -> do 
-                    Just (_, fields, _) <- CMR.asks (M.lookup className . classes)
+                  Object className _ -> do 
+                    Just (ClassInfo _ _ fields _) <- CMR.asks (M.lookup className . classes)
                     case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                        Nothing -> fail "Trying to reference a field that doesn't exists."
                        Just t' -> return $ ETyped exp t'
-                  _ -> fail $ "Trying to dereference a primitive type"
+                  _ -> fail "Trying to dereference a primitive type"
 
       ENull id  -> 
         do classes <- CMR.asks classes 
            case M.lookup id classes of
-                Just (superT, _, _) -> return (ETyped NullC (Object id superT))
+                Just (ClassInfo superT _ _ _) -> return (ETyped NullC (Object id superT))
                 Nothing -> do structs <- CMR.asks structs
                               if M.member id structs then
                                 return (ETyped NullC (Pointer id))
                               else fail $ show id ++ " is not a nullable type." 
 
-      EString s        -> return $ ETyped exp String
+      EString _        -> return $ ETyped exp String
 
       EApp id args     ->
         do fun <- lookupFun id
@@ -395,6 +378,12 @@ inferTypeExpr exp =
            (typedObj: typedArgs) <- checkArgs id args_type (obj : args)
            return $ ETyped (MApp id typedObj typedArgs) ret_type
 
+      -- Mod is defined only for integers
+      EMul exp1 Mod exp2 -> do
+        typedE1 <- checkTypeExpr Int exp1 
+        typedE2 <- checkTypeExpr Int exp2
+        return $ ETyped (EMul typedE1 Mod typedE2) Int
+      
       EMul exp1 op exp2  -> do
         typedE1@(ETyped _ t1)  <- inferTypeExpr exp1
         checkTypeNum t1

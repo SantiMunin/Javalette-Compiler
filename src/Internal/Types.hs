@@ -5,5 +5,11 @@ import Data.Map
 
 type Structs = Map Ident [SField]
 
--- Class name - supertypes - attributes - methods
-type Classes = Map Ident ([Ident], [SField], [FnDef])
+type Classes = Map Ident ClassInfo
+
+data ClassInfo = ClassInfo 
+               { superT        :: [Ident]
+               , hierarchyAttr :: [SField]
+               , classAttr     :: [SField]
+               , methods       :: [FnDef]
+               }

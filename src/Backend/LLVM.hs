@@ -2,7 +2,7 @@
 -- to make sure we are generating correct programs.
 module Backend.LLVM where
 
-import Data.List (intercalate, intersperse)
+import Data.List (intercalate)
 
 -- | A label can be either a number or a string. 
 -- The numbers will be displayed as "lab" ++ n.
@@ -26,8 +26,8 @@ data Ty = I32
         | Ptr Ty
         | ArrayT Ty Integer
         | Def Id
-        | Str [(Id,Ty)]
-          
+        | F Ty [Ty]
+
 instance Show Ty where
   show I32 = "i32"
   show I64 = "i64"
@@ -38,7 +38,12 @@ instance Show Ty where
   show (Ptr t) =  show t ++ "*"
   show (ArrayT t _) = "%array" ++ show t
   show (Def id) = "%" ++ id
-  
+  show (F rT argT) = concat [ show rT
+                              , "("
+                              , if null argT then "..."
+                                else intercalate "," $ map show argT
+                              , ")*"]
+    
 -- | Constants are directly written on the target code. 
 data Constant = CI32 { i32 :: Integer }
               | CI64 { i64 :: Integer }
@@ -58,11 +63,11 @@ instance Show Constant where
   show (LitCode s)     = s
 
 -- | A LLVM register. Shown on the target code as
--- %t ++ name.
+-- % ++ name.
 newtype Register = Register String
 
 instance Show Register where
-  show (Register n) = "%t" ++ n
+  show (Register n) = "%" ++ n
 
 -- | An operand can be a constant, a register, or nothing.
 data Operand = Const { const :: Constant }
@@ -71,9 +76,11 @@ data Operand = Const { const :: Constant }
              | Emp
                
 instance Show Operand where
-  show (Const c) = show c
-  show (Reg   r) = show r
-  show (Global s) = "@"++s
+  show (Const c)  = show c
+  show (Reg   r)  = show r
+  show (Global s) = "@" ++ s
+  show Emp        = ""
+
 
 -- | A nonterminator operation is just any operation which does not 
 -- ends a function (i.e. arithmetic, comparisons, stores, loads...).
@@ -187,8 +194,9 @@ instance Show NonTerminator where
                     I32 -> "s"
 
       ICall t id args ->  concat [ "call " ++ show t
-                                  , " @" ++ id
-                                  , "(" ++ intercalate "," ( showArgs args ) ++ ")"]
+                                 , " "
+                                 , id
+                                 , "(" ++ intercalate "," ( showArgs args ) ++ ")"]
       ILth a b t -> concat [instr, show t, " ", show a, ", ", show b] 
         where
           instr = case t of
@@ -240,9 +248,6 @@ instance Show NonTerminator where
       isD D   = "f"
       isD I32 = ""
       showArgs = map (\(t, v) -> show t ++ " " ++ show v) 
-      cmp t cond = case t of
-                       I32 -> "icmp " ++ cond ++ " "
-                       D   -> "fcmp " ++ cond ++ " " 
 
 -- | A terminator is a instruction that can terminate a 
 -- function or block (i.e. returns, jumps).
@@ -280,12 +285,12 @@ data Function = Fun { idF    :: Id
                     , instr  :: [IBlock] }
 
 instance Show Function where
-  show (Fun name ty args blocks) = unlines $ [header] ++ map show blocks ++ ["}"]
+  show (Fun id ty args blocks) = unlines $ [header] ++ map show blocks ++ ["}"]
         where
-          header = concat ["define " ,show ty ," @" ,name
+          header = concat ["define " ,show ty ," @",id
                           ,"(" , intercalate "," (map showArg args)
                           ,")" ," {" ]
-          showArg (id, t) = show t ++ " %t" ++ id 
+          showArg (id, t) = show t ++ " %" ++ id
 
 -- | A block of instructions starts with a label followed by a 
 -- list of nonterminators and finished by a terminator.
@@ -295,10 +300,10 @@ data IBlock = IBlock { lab :: Label
 
 
 instance Show IBlock where
-  show (IBlock lab ins ter) = unlines [ "\n" ++ show lab ++ ":"
-                                     , unlines $ map ((indent++) . showNonT) ins
-                                     , indent ++  show ter
-                                     ]
+  show (IBlock lab ins ter) = unlines [ show lab ++ ":"
+                                      , unlines $ map ((indent++) . showNonT) ins
+                                      , indent ++  show ter
+                                      ]
     where
       indent :: String
       indent = "  "
@@ -345,20 +350,20 @@ instance Show TopLevel where
            , " @"
            , name
            , "("
-           , concat . intersperse "," . map show $ argTypes
+           , intercalate "," . map show $ argTypes
            , ")" ]
   show (TypeDecl name typeList) =
     concat [ "%"
            , name
            , " = type {"
-           , concat . intersperse "," . map show $ typeList
+           , intercalate "," . map show $ typeList
            , "}" ]
   show (GlobalDecl ty name fields) =
     concat [ "@"
            , name
            , " = global "
            , show ty
-           , "{ "
+           , " { "
            , intercalate "," $ map (\(t, name) -> show t ++ " " ++ show name) fields
            , " }" ]
   
