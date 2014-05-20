@@ -120,8 +120,7 @@ ENew.      Expr7 ::= "new" Type [DimA] ;
 PtrDeRef.  Expr7 ::= Ident "->" Ident;
 
 -- Shift-reduce
-ENull.     Expr6 ::= "(" Ident ")" "null";
-
+internal ENull. Expr ::= Ident;
 internal NullC. Expr ::= "null";
 
 ELitInt.   Expr6 ::= Integer ;
@@ -151,8 +150,13 @@ EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 EOr.       Expr ::= Expr1 "||" Expr ;
 
 
-coercions  Expr 7 ;
+coercions  Expr 6 ;
 
+Co7.    Expr7 ::= "(" Expr6 ")" MaybeNull;
+Co6.    Expr6 ::= Expr7;
+
+MNull. MaybeNull    ::= "null";
+MNotNull. MaybeNull ::= ;
 separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]";

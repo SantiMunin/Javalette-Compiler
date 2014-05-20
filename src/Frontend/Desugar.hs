@@ -328,8 +328,9 @@ desugarStmt stmt = case stmt of
     desugaredType  <- desugarType type'
     desugaredItems <- mapM desugarItem items
     return (Decl desugaredType desugaredItems)
-  For (ForDecl t id) exp@(Var v eDims) innerStm ->
-    do index  <- newSugarVar
+  For (ForDecl t id) expr innerStm ->
+    do exp@(Var v eDims) <- desugarExpr expr
+       index  <- newSugarVar
        len    <- newSugarVar
        desugaredType <- desugarType t
        desugaredStmt <- desugarStmt innerStm
@@ -425,6 +426,22 @@ desugarExpr expr =
            Pointer name   -> return (ENull name)
            Object  name _ -> return (ENull name)
 
+    Co6 expr' -> desugarExpr expr'
+    Co7 expr' maybeNull -> 
+      do desugaredExpr <- desugarExpr expr'
+         case desugaredExpr of
+           Var id [] -> 
+             case maybeNull of
+               MNull  -> do t <- desugarType (Ref id)
+                            case t of
+                              Pointer name   -> return (ENull name)
+                              Object  name _ -> return (ENull name)
+               MNotNull -> return (Var id [])
+           _ -> 
+             case maybeNull of
+               MNull    -> fail "Not nullable" 
+               MNotNull -> return desugaredExpr
+               
     EApp id exprs  ->
       liftM (EApp id) $ mapM desugarExpr exprs
 
@@ -436,6 +453,8 @@ desugarExpr expr =
       do object <- desugarExpr expr1
          args   <- mapM desugarExpr exprs
          return $  MApp id object args
+    Method expr1 expr2 ->
+      liftM2 Method (desugarExpr expr1) (desugarExpr expr2)
     Neg expr  -> liftM Neg $ desugarExpr expr
     Not expr  -> liftM Not $ desugarExpr expr
     EMul expr1 mulop expr2  -> do
