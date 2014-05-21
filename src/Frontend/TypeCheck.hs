@@ -166,8 +166,8 @@ typeCheckLVal lval =
                       DimT t' tDim -> DimT t' (tDim - fromIntegral (length ndims))
                       t'           -> t'
          return $ LValTyped (LValVar ident typedAddrExpr) dimT
-    LValStr name field ->
-      do t <- lookupVar name
+    LValStr expr field ->
+      do typedExpr@(ETyped _ t) <- inferTypeExpr expr
          case t of
            Pointer strName ->
              do structs <- CMR.asks structs
@@ -178,7 +178,7 @@ typeCheckLVal lval =
                           $ fields of
                       Nothing ->
                         fail "Trying to reference a field that doesn't exist"
-                      Just t' -> return $ LValTyped lval t'
+                      Just t' -> return $ LValTyped (LValStr typedExpr field) t'
            Object className _ -> 
              do classes <- CMR.asks classes
                 case M.lookup className classes of
@@ -188,9 +188,9 @@ typeCheckLVal lval =
                            $ fields of
                       Nothing ->
                         fail $ "Class " ++ show className ++ " doesn't have the attribute " ++ show field ++ "."
-                      Just t' -> return $ LValTyped lval t'
-           _ -> error $ "Variable " ++ show name ++ " must be a pointer."
-    _ -> error $ "Unexpected value in typeCheck"
+                      Just t' -> return $ LValTyped (LValStr typedExpr field) t'
+           _ -> error $ "Variable " ++ show typedExpr ++ " must be a pointer."
+    _ -> error  "Unexpected value in typeCheck"
 
 
 -- | Typechecks the validity of a given statement.
@@ -338,19 +338,19 @@ inferTypeExpr exp =
          checkValidArrayType t
          return (ETyped (ENew t typedEDims) (DimT t ndims))
 
-      PtrDeRef id1 id2  -> do
-             deref <- lookupVar id1
+      PtrDeRef expr id2  -> do
+             typedExpr@(ETyped _ deref) <- inferTypeExpr expr
              case deref of
                   Pointer structName -> do
                    Just fields <- CMR.asks (M.lookup structName . structs)
                    case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                      Nothing -> fail "Trying to reference a field that doesn't exists."
-                     Just t' -> return $ ETyped exp t'
+                     Just t' -> return $ ETyped typedExpr t'
                   Object className _ -> do 
                     Just (ClassInfo _ _ fields _) <- CMR.asks (M.lookup className . classes)
                     case lookup id2 . map (\(StrField t id) -> (id,t)) $ fields of
                        Nothing -> fail "Trying to reference a field that doesn't exists."
-                       Just t' -> return $ ETyped exp t'
+                       Just t' -> return $ ETyped typedExpr t'
                   _ -> fail "Trying to dereference a primitive type"
 
       ENull id  -> 

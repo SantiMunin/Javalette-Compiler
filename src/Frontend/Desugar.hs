@@ -370,10 +370,10 @@ desugarLVal lval = case lval of
   LValVar id dimas  -> do
     isAttr <- isClassAttr id
     if isAttr then
-      return (LValStr (Ident "self") id)
+      return (LValStr (Var (Ident "self") []) id)
     else
       liftM (LValVar id) (mapM desugarDimA dimas)
-  LValStr id1 id2   -> return (LValStr id1 id2)
+  LValStr v id2   -> return (LValStr v id2)
 
 -- | Desugar a Item.
 desugarItem :: Item -> Desugar Item
@@ -416,7 +416,7 @@ desugarExpr expr =
     Var id dimas -> do
       isAttr <- isClassAttr id
       if isAttr then
-        return (PtrDeRef (Ident "self") id)
+        return (PtrDeRef (Var (Ident "self") []) id)
       else
         liftM (Var id) (mapM desugarDimA dimas)
     ENew type' dimas  -> liftM2 ENew (desugarType type') (mapM desugarDimA dimas)
@@ -467,4 +467,5 @@ desugarExpr expr =
       return (EAdd desugaredExpr1 addop desugaredExpr2)
     EAnd expr1 expr2  -> liftM2 EAnd (desugarExpr expr1) (desugarExpr expr2)
     EOr  expr1 expr2  -> liftM2 EOr  (desugarExpr expr1) (desugarExpr expr2)
+    PtrDeRef expr1 id -> liftM (flip PtrDeRef id) (desugarExpr expr1)
     _ -> return expr

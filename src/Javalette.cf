@@ -54,7 +54,7 @@ separator nonempty Item "," ;
 
 Ass.       Stmt ::= LVal "=" Expr  ";" ;
 LValVar.   LVal ::= Ident [DimA]; 
-LValStr.   LVal ::= Ident "->" Ident;
+LValStr.   LVal ::= Expr7 "->" Ident;
 internal LValTyped. LVal ::= "[" LVal ":" Type "]";
 
 Incr.      Stmt ::= LVal "++"  ";" ;
@@ -117,7 +117,7 @@ separator  DimA "";
 -- Array initialization
 ENew.      Expr7 ::= "new" Type [DimA] ;
 
-PtrDeRef.  Expr7 ::= Ident "->" Ident;
+PtrDeRef.  Expr7 ::= Expr7 "->" Ident;
 
 internal ENull. Expr ::= Ident;
 internal NullC. Expr ::= "null";

@@ -321,8 +321,9 @@ genCodeLVal lval  =
       do (addr,_) <- lookUpVar id
          return addr
 
-    LValStr var (Ident field) ->
-        do (addr,ptr@(Ptr (Def name))) <- lookUpVar var
+    LValStr expr@(ETyped _ objT) (Ident field) ->
+        do let ptr@(Ptr (Def name)) = toPrimTy objT
+           str <- genCodeExpr expr
            strFields <- CMS.gets (M.lookup name . structs)
            classAttr <- CMS.gets (M.lookup name  . classes)
            let Just indx =
@@ -330,12 +331,9 @@ genCodeLVal lval  =
                    Nothing -> fmap ((+1) . fromIntegral) . elemIndex field . map fst $ fromJust classAttr
                    Just fields  -> fmap fromIntegral . elemIndex field . map fst $ fields
                               
-           str <- freshLocal
-           emit $ NonTerm (ILoad addr ptr) (Just str)
-
            debugger  "Calculate the address of the field"
            fieldAddr <- freshLocal
-           emit $ NonTerm (GetElementPtr ptr (Reg str) [(I32, Const (CI32 0))
+           emit $ NonTerm (GetElementPtr ptr str [(I32, Const (CI32 0))
                                                        ,(I32, Const (CI32 indx))])
                   (Just fieldAddr)
            return fieldAddr
@@ -501,7 +499,8 @@ genCodeExpr (ETyped expr t) = case expr of
   Var id index -> do
     (addr,ty) <- lookUpVar id
     case ty of
-      ArrayT ty' nDim | null index ->
+      ArrayT ty' nDim 
+                  | null index ->
                     do elem <- freshLocal
                        emit $ NonTerm (ILoad addr ty) (Just elem)
                        return (Reg elem)
