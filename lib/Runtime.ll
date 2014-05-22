@@ -48,7 +48,7 @@ entry: %res = alloca double
 %ClassDescriptor = type { %ClassDescriptor*, %ClassMethod* }
 
 ; Function Attrs: nounwind ssp uwtable
-define i8* @search_method(%ClassMethod* %entry, i64 %tag) #0 {
+define i8* @search_method(%ClassMethod* %entry, i64 %tag) {
   %1 = alloca i8*, align 8
   %2 = alloca %ClassMethod*, align 8
   %3 = alloca i64, align 8
@@ -92,7 +92,7 @@ define i8* @search_method(%ClassMethod* %entry, i64 %tag) #0 {
 }
 
 ; Function Attrs: nounwind ssp uwtable
-define i8* @dispatcher(i64 %tag, %ClassDescriptor* %descr) #0 {
+define i8* @dispatcher(i64 %tag, %ClassDescriptor* %descr) {
   %1 = alloca i8*, align 8
   %2 = alloca i64, align 8
   %3 = alloca %ClassDescriptor*, align 8
