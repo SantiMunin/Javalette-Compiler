@@ -2,6 +2,7 @@ all: normal
 
 normal:
 	ghc --make -O2 Jlc.hs -o Jlc
+	llvm-as ../lib/runtime.ll
 	cp executable ../jlc
 wall:	
 	ghc -W -fno-warn-name-shadowing --make -O2 Jlc.hs -o Jlc
@@ -16,6 +17,10 @@ clean:
 	rm -f Javalette/*.bak
 	rm -f Frontend/*.hi Frontend/*.o Backend/*.hi Backend/*.o Internal/*.o Internal/*.hi
 	rm -f Jlc.hi Jlc.o 
+
+cleanall: clean
+	rm -f Jlc
+	rm -f ../lib/runtime.bc
 
 distclean:
 	rm -rf Javalette

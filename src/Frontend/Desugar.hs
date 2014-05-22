@@ -329,12 +329,14 @@ desugarStmt stmt = case stmt of
     desugaredItems <- mapM desugarItem items
     return (Decl desugaredType desugaredItems)
   For (ForDecl t id) expr innerStm ->
-    do exp@(Var v eDims) <- desugarExpr expr
-       index  <- newSugarVar
-       len    <- newSugarVar
-       desugaredType <- desugarType t
-       desugaredStmt <- desugarStmt innerStm
-       return $ BStmt
+    do exp <- desugarExpr expr
+       case exp of
+         (Var v eDims) ->
+           do index  <- newSugarVar
+              len    <- newSugarVar
+              desugaredType <- desugarType t
+              desugaredStmt <- desugarStmt innerStm
+              return $ BStmt
                  (SBlock
                   [ Decl Int [Init index  (ELitInt 0)]
                   , Decl Int [Init len (Method exp (Var (Ident "length") [])) ]
@@ -352,7 +354,7 @@ desugarStmt stmt = case stmt of
                               , desugaredStmt
                               ]))
                   ])
-  For {} -> fail "The expression should be a variable."
+         _ -> fail "The expression should be a variable."
   Ass lval expr   -> liftM2 Ass (desugarLVal lval) (desugarExpr expr)
   Ret expr        -> liftM Ret $ desugarExpr expr
   Cond expr stmt  -> liftM2 Cond (desugarExpr expr) (desugarStmt stmt)
