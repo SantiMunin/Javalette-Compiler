@@ -4,7 +4,7 @@
 
 
 \section{Usage}
-The usage of the compiler is quite simple, to compile it go to the root of the project and execute \texttt{make -C src/}, then you just need to use the given script \texttt{./jlc <sourcefile>}.
+The usage of the compiler is quite simple, to compile it go to the root of the project and execute \texttt{make -C src/}, then you just need to use the given script \texttt{./jlc <sourcefile>}.\\
 
 \section{Language specification}
 The language is specified using \texttt{BNFC}, just open the \texttt{Javalette.cf} file in order to check all the grammar rules of the language.
@@ -12,18 +12,26 @@ The language is specified using \texttt{BNFC}, just open the \texttt{Javalette.c
 \section{Shift/reduce conflicts}
 
 \begin{itemize}
-  \item {\bf The dangling else problem}: Caused by the rules \texttt{Cond} and \texttt{CondElse}. With these we define that an \texttt{if} statement can optionally have an \texttt{else} branch. The problem is that the compiler does not know how to deal with constructions such as \texttt{if cond then if cond2 then st1 else st2} since it is impossible to know to which \texttt{if} belongs the \texttt{else}.
+  \item {\bf \#1 The dangling else problem}: Caused by the rules \texttt{Cond} and \texttt{CondElse}. With these we define that an \texttt{if} statement can optionally have an \texttt{else} branch. The problem is that the compiler does not know how to deal with constructions such as \texttt{if cond then if cond2 then st1 else st2} since it is impossible to know to which \texttt{if} belongs the \texttt{else}. This is a well-known harmless shift-reduce conflict since the shift interpretation is the most intuitive (i.e. what people expect).
+  \item {\bf \#2}: When the lexer finds a string like \texttt{new <type>[][10]} since the 
+  program is parsing a \texttt{type} after the \texttt{new} and the character ``['' can be either 
+  part of a type (\texttt{int[]}) or a dimension (\texttt{[10]}) a conflict shows. This is not a problem because 
+  \texttt{new <type>[][10]} is not a valid constructor and the type checker will fail. A valid constructor 
+  (i.e. \texttt{new <type>[10]}) works well since without empty brackets before (\texttt{[]}) no conflict appears.
+  \item {\bf \#3}: After parsing a string like ``\texttt{( <identifier>}'' and a right parenthesis ``\texttt{)}'' the system 
+  doubts between reducing it to a coerced expression (\texttt{Expr5 -> Expr6}) or our \textit{hand-made}\footnote{We had to make a work-around in order to allow one problematic shift-reduce conflict, the next paragraph explains it} coerced expression. Since between parenthesis we want an expression to go always to \texttt{Expr7} it is ok to do shift and increase the precedence level to 7 directly.
 \end{itemize}
 
+Besides this, we think it is worth to mention how we solved a conflict we had between \texttt{(<type>) null} and variable coercion \texttt{(x)}. By default it shifted trying to parse the former, that wasn't valid since \texttt{(x);} wouldn't be correct. We had to change the grammar so now the highest precedence (parenthesis) wait for an optional \texttt{null} (this is \texttt{(x)} and \texttt{(<type>) null} are parsed in the same way).
 \section{About the compiler}
 
 The compiler consists of the following pipeline:
 
 \begin{enumerate}
- \item {\bf Lexer}: Generated with \texttt{BNFC}, this phase reads the source file and translate it into a set of tokens.
+ \item {\bf Lexer}: Generated with \texttt{BNFC}, this phase reads the source file and translates it into a set of tokens.
  \item {\bf Desugarer}: Removes syntax-sugar such as for loops and structure/classes definitions.
- \item {\bf Typechecker}: Checks the program is correct, and returns the typed program.
- \item {\bf Code generator}: Using the typed program, generated the \texttt{LLVM} code necessary to run the program.
+ \item {\bf Typechecker}: Checks the program is correct and returns the typed program.
+ \item {\bf Code generator}: Using the typed program, generates the \texttt{LLVM} code necessary to run the program.
 \end{enumerate}
 
 Each of these phases are implemented in a \texttt{Haskell} module with the same name (except the lexer which is implemented by \texttt{BNFC}). In addition to those files, we have implemented another module called \texttt{LLVM.hs} which defines a small framework to build LLVM programs, this adds an extra layer of type checking (it tries to prevent some mistakes while generating the code).
@@ -46,17 +54,19 @@ We generalized the last extension extending the global structure by adding the n
     The main challenge here was the code generation, since although the structure is similar to the last extension, the assignment is a little bit tedious due to the adressing (and duplication/modification) of the fields of the structure. 
 \subsection{Structures}
 
-This was an interesing extension since it provided us with a good framework in order to implement the following ones. We had to add some rules to the grammar, and some types to the program since we need to keep track of the fields of each structure. Moreover, we need to keep track of the synonyms (defined through \texttt{typedef}). Once the program passes the type checker, then the code generation is quite straight-forward as LLVM provides structures without any workaround.
+This was an interesing extension since it provided us with a good framework in order to implement the following ones. We had to add some rules to the grammar, and some types to the program since we need to keep track of the fields of each structure. Moreover, we need to keep track of the synonyms (defined through \texttt{typedef}). Once the program passes the type checker, then the code generation is quite straight-forward as LLVM provides an easy generation of structures.
 
 
 \subsection{Classes}
 For this extension, the desugaring phase did mostly all the job. The idea here was to translate objects to structures (containing the attributes) and functions. By doing this, we only needed to change the grammar and the desugarer, while the type checker and the code generator barely changed.
 
+We introduced a constraint here: since all attributes are private, our semantics do not allow classes without methods (structures are meant to be used in this case).
+
 \subsection{Classes 2 (with dynamic dispatch)}
-In order to get this extension working, we needed to add class descriptors (structures which hold the information of a class). Due to this addition, the apprach used for the previous extension was no longer valid.
+In order to get this extension working, we needed to add class descriptors (structures which hold the information of a class). Due to this addition, the approach used for the previous extension was no longer valid.
 
-This time, we splitted structures and classes. Structures remained the same, but now classes are processed in a more complicated way. There is a class descriptor for each class, in order to keep the hierarchy, each of these descriptors point to its parent class (or \texttt{null}, in case).
+This time, we splitted structures and classes. Structures remained the same, but now classes are processed in a more complicated way. There is a class descriptor for each class, in order to keep the hierarchy, each of these descriptors points to its parent class (or \texttt{null}, in case).
 
-Knowing this, is quite easy to decide which method to execute. Using a function we defined in \texttt{C} we check (in runtime) which is the closest method to the object. This means, where in the hierarchy (from the very first parent to the type of the current object) were defined the method, trying to pick the deepest one.
+Knowing this, is quite easy to decide which method to execute. Using a function we defined in \texttt{C} we check (in runtime) which is the closest method to the object. This means, where in the hierarchy (from the very first parent to the type of the current object) was the method defined, picking the ``deepest'' one.
 
 \end{document}
