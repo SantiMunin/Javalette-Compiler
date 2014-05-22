@@ -17,3 +17,9 @@ graderTestSuite/
 *.ll
 
 src/Javalette/
+
+*.aux
+*.toc
+*.log
+*.bbl
+*.pdf

@@ -1,0 +1,62 @@
+\documentclass{article}
+
+\begin{document}
+
+
+\section{Usage}
+The usage of the compiler is quite simple, to compile it go to the root of the project and execute \texttt{make -C src/}, then you just need to use the given script \texttt{./jlc <sourcefile>}.
+
+\section{Language specification}
+The language is specified using \texttt{BNFC}, just open the \texttt{Javalette.cf} file in order to check all the grammar rules of the language.
+
+\section{Shift/reduce conflicts}
+
+\begin{itemize}
+  \item {\bf The dangling else problem}: Caused by the rules \texttt{Cond} and \texttt{CondElse}. With these we define that an \texttt{if} statement can optionally have an \texttt{else} branch. The problem is that the compiler does not know how to deal with constructions such as \texttt{if cond then if cond2 then st1 else st2} since it is impossible to know to which \texttt{if} belongs the \texttt{else}.
+\end{itemize}
+
+\section{About the compiler}
+
+The compiler consists of the following pipeline:
+
+\begin{enumerate}
+ \item {\bf Lexer}: Generated with \texttt{BNFC}, this phase reads the source file and translate it into a set of tokens.
+ \item {\bf Desugarer}: Removes syntax-sugar such as for loops and structure/classes definitions.
+ \item {\bf Typechecker}: Checks the program is correct, and returns the typed program.
+ \item {\bf Code generator}: Using the typed program, generated the \texttt{LLVM} code necessary to run the program.
+\end{enumerate}
+
+Each of these phases are implemented in a \texttt{Haskell} module with the same name (except the lexer which is implemented by \texttt{BNFC}). In addition to those files, we have implemented another module called \texttt{LLVM.hs} which defines a small framework to build LLVM programs, this adds an extra layer of type checking (it tries to prevent some mistakes while generating the code).
+
+\section{Implemented extensions}
+
+We have implemented 5 extensions, which will be explained within the following sections.
+
+\subsection{Arrays}
+
+This was the first extension implemented, which was modified during the development of the second one. The initial idea was to create a global structure (so the array can be passed by reference) which holded the address and size of the array (the type is not needed during runtime).
+
+In order to hold the type of the array, we've created an internal type \texttt{DimT} which contains the type of the elements (\texttt{int}, \texttt{double}, etc) and the number of dimensions. 
+
+\subsection{Multidimmensional arrays}
+
+
+We generalized the last extension extending the global structure by adding the number of dimensions and the length of each dimension. In this way, we don't need to allocate multimensional arrays using loops since we just use a 1-dimensional array which contains every dimension. Using a simple formula, we can address the correct element.
+
+    The main challenge here was the code generation, since although the structure is similar to the last extension, the assignment is a little bit tedious due to the adressing (and duplication/modification) of the fields of the structure. 
+\subsection{Structures}
+
+This was an interesing extension since it provided us with a good framework in order to implement the following ones. We had to add some rules to the grammar, and some types to the program since we need to keep track of the fields of each structure. Moreover, we need to keep track of the synonyms (defined through \texttt{typedef}). Once the program passes the type checker, then the code generation is quite straight-forward as LLVM provides structures without any workaround.
+
+
+\subsection{Classes}
+For this extension, the desugaring phase did mostly all the job. The idea here was to translate objects to structures (containing the attributes) and functions. By doing this, we only needed to change the grammar and the desugarer, while the type checker and the code generator barely changed.
+
+\subsection{Classes 2 (with dynamic dispatch)}
+In order to get this extension working, we needed to add class descriptors (structures which hold the information of a class). Due to this addition, the apprach used for the previous extension was no longer valid.
+
+This time, we splitted structures and classes. Structures remained the same, but now classes are processed in a more complicated way. There is a class descriptor for each class, in order to keep the hierarchy, each of these descriptors point to its parent class (or \texttt{null}, in case).
+
+Knowing this, is quite easy to decide which method to execute. Using a function we defined in \texttt{C} we check (in runtime) which is the closest method to the object. This means, where in the hierarchy (from the very first parent to the type of the current object) were defined the method, trying to pick the deepest one.
+
+\end{document}
