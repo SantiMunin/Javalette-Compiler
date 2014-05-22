@@ -2,7 +2,6 @@ all: normal
 
 normal:
 	ghc --make -O2 Jlc.hs -o Jlc
-	llvm-as ../lib/runtime.ll
 	cp executable ../jlc
 wall:	
 	ghc -W -fno-warn-name-shadowing --make -O2 Jlc.hs -o Jlc
