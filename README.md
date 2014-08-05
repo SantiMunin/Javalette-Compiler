@@ -1,4 +1,4 @@
-Compiler-Construction-2014
+Javalette-Compiler
 ==========================
 
-A full-compiler of a C-like language
+A full-compiler of a C-like language written in Haskell.
